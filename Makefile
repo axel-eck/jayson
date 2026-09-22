@@ -1,4 +1,4 @@
-.PHONY: build test app run icon clean
+.PHONY: build test app run install icon clean
 
 export SDKROOT := $(shell Scripts/sdk.sh)
 
@@ -13,6 +13,15 @@ app:
 
 run: app
 	open build/Jayson.app
+
+# Copies the release build into ~/Applications so Spotlight and Launchpad can find it.
+# (Spotlight does not reliably index symlinked .app bundles, hence a copy.)
+INSTALL_DIR ?= $(HOME)/Applications
+install: app
+	mkdir -p "$(INSTALL_DIR)"
+	rm -rf "$(INSTALL_DIR)/Jayson.app"
+	ditto build/Jayson.app "$(INSTALL_DIR)/Jayson.app"
+	@echo "Installed to $(INSTALL_DIR)/Jayson.app"
 
 icon:
 	Scripts/make-icon.sh
