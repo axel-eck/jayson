@@ -1,4 +1,5 @@
 import SwiftUI
+import UniformTypeIdentifiers
 import JaysonCore
 
 /// Root of the window: sidebar | tabbed document area | optional schema panel.
@@ -20,8 +21,9 @@ struct MainWindow: View {
                         .id(doc.id)
                 }
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
             .background(Chrome.contentBackground)
-            .frame(minWidth: 520)
+            .frame(minWidth: Chrome.minDocumentWidth)
             .layoutPriority(1)
             if workspace.isSchemaPanelVisible, let doc = workspace.selectedDocument {
                 SchemaPanel(doc: doc)
@@ -29,18 +31,49 @@ struct MainWindow: View {
                     .transition(.move(edge: .trailing))
             }
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Chrome.contentBackground)
         .environment(workspace)
         .focusedSceneValue(\.workspace, workspace)
+        .onDrop(of: [.fileURL], isTargeted: nil) { providers in
+            handleDrop(providers)
+        }
         .onAppear { propagateUndoManager() }
         .onChange(of: undoManager) { _, _ in propagateUndoManager() }
         .onChange(of: workspace.selectedDocumentID) { _, _ in propagateUndoManager() }
-        .frame(minWidth: 960, minHeight: 560)
+        .frame(minWidth: minimumWindowWidth, minHeight: 560)
         .ignoresSafeArea()
+    }
+
+    /// The window can never be narrower than the panels that are currently shown.
+    private var minimumWindowWidth: CGFloat {
+        Chrome.minDocumentWidth
+            + (workspace.isSidebarVisible ? Chrome.sidebarWidth : 0)
+            + (workspace.isSchemaPanelVisible ? Chrome.panelWidth : 0)
     }
 
     private func propagateUndoManager() {
         for doc in workspace.documents { doc.undoManager = undoManager }
+    }
+
+    /// Dropped files open as documents; a file with "schema" in its name loads as a schema.
+    private func handleDrop(_ providers: [NSItemProvider]) -> Bool {
+        let fileProviders = providers.filter { $0.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) }
+        guard !fileProviders.isEmpty else { return false }
+        for provider in fileProviders {
+            provider.loadItem(forTypeIdentifier: UTType.fileURL.identifier, options: nil) { item, _ in
+                guard let data = item as? Data, let url = URL(dataRepresentation: data, relativeTo: nil) else { return }
+                Task { @MainActor in
+                    if url.lastPathComponent.lowercased().contains("schema"), let doc = workspace.selectedDocument {
+                        doc.load(from: url, into: .schema)
+                    } else {
+                        let target = (workspace.selectedDocument?.sourceText.isEmpty == true) ? workspace.selectedDocument! : workspace.newDocument(select: true)
+                        target.load(from: url, into: .json)
+                    }
+                }
+            }
+        }
+        return true
     }
 }
 
@@ -70,7 +103,9 @@ struct TabBar: View {
             if let doc = workspace.selectedDocument {
                 HStack(spacing: 6) {
                     ChromeButton(title: "Format", systemImage: "text.alignleft", help: "Pretty-print (⇧⌘F)") { doc.format() }
+                        .fixedSize()
                     ChromeButton(title: "Clean", systemImage: "sparkles", help: "Repair and format messy JSON (⇧⌘K)") { doc.clean() }
+                        .fixedSize()
                     Menu {
                         Button("Minify") { doc.minify() }
                         Button("Sort Keys") { doc.sortKeysNow() }
@@ -105,6 +140,7 @@ struct TabBar: View {
                 }
             }
         }
+        .fixedSize(horizontal: false, vertical: true)
         .padding(.horizontal, 10)
         .frame(height: Chrome.tabBarHeight)
         .background(Chrome.contentBackground)
@@ -170,9 +206,11 @@ struct DocumentArea: View {
     var body: some View {
         VStack(spacing: 0) {
             content
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
             Hairline()
             StatusBar()
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .environment(doc)
         .focusedSceneValue(\.document, doc)
         .sheet(item: $doc.pendingEdit) { edit in EditSheet(edit: edit).environment(doc) }
@@ -193,8 +231,8 @@ struct DocumentArea: View {
             TreePane()
         case .split:
             HSplitView {
-                SourcePane().frame(minWidth: 280, idealWidth: 480)
-                TreePane().frame(minWidth: 320)
+                SourcePane().frame(minWidth: 220, idealWidth: 480)
+                TreePane().frame(minWidth: 220)
             }
         }
     }

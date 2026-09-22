@@ -22,21 +22,20 @@ struct SchemaPanel: View {
             .padding(.horizontal, 12)
             .padding(.bottom, 10)
             Hairline()
-            switch tab {
-            case .schema: schemaEditor
-            case .results: results
+            Group {
+                switch tab {
+                case .schema: schemaEditor
+                case .results: results
+                }
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
             Hairline()
             footer
         }
         .frame(width: Chrome.panelWidth)
+        .frame(maxHeight: .infinity)
         .background(Chrome.contentBackground)
         .overlay(alignment: .leading) { Hairline(vertical: true) }
-        .onChange(of: doc.validationState) { _, newValue in
-            if case .invalid = newValue, tab == .schema, doc.schemaText.isEmpty == false, !doc.validationErrors.isEmpty {
-                // Stay on the editor while typing; results badge updates live.
-            }
-        }
     }
 
     // MARK: Header
@@ -96,6 +95,7 @@ struct SchemaPanel: View {
             .overlay {
                 if doc.schemaText.isEmpty { emptyHint }
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     private var schemaTextBinding: Binding<String> {
@@ -109,24 +109,13 @@ struct SchemaPanel: View {
     }
 
     private var emptyHint: some View {
-        VStack(spacing: 12) {
-            Image(systemName: "checkmark.shield")
-                .font(.system(size: 30, weight: .light))
-                .foregroundStyle(.tertiary)
-            Text("Validate this document against a JSON Schema.")
-                .font(.system(size: 13, weight: .medium))
-            Text("Infer one from the JSON, start from a blank template,\nor load a schema from a file or URL.")
-                .font(Chrome.captionFont)
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
-            HStack(spacing: 8) {
-                ChromeButton(title: "Infer from JSON", systemImage: "wand.and.stars") { doc.inferSchema() }
-                    .disabled(doc.document == nil)
-                ChromeButton(title: "Blank", systemImage: "doc") { doc.newBlankSchema() }
-                ChromeButton(title: "Open…", systemImage: "folder") { doc.openSchemaFile() }
-            }
+        EmptyState(systemImage: "checkmark.shield", title: "No schema yet", message: "Infer one from the JSON, start from a blank template, or load a schema from a file or URL. You can also paste one here.") {
+            ChromeButton(title: "Infer", systemImage: "wand.and.stars") { doc.inferSchema() }
+                .disabled(doc.document == nil)
+            ChromeButton(title: "Blank", systemImage: "doc") { doc.newBlankSchema() }
+            ChromeButton(title: "Open…", systemImage: "folder") { doc.openSchemaFile() }
         }
-        .padding(24)
+        .allowsHitTesting(true)
     }
 
     // MARK: Results
@@ -134,32 +123,19 @@ struct SchemaPanel: View {
     @ViewBuilder
     private var results: some View {
         if let schemaError = doc.schemaError {
-            ContentUnavailableView {
-                Label("Schema is not valid JSON", systemImage: "exclamationmark.triangle")
-            } description: {
-                Text(schemaError)
-            } actions: {
-                Button("Edit Schema") { tab = .schema }
+            EmptyState(systemImage: "exclamationmark.triangle", title: "Schema is not valid JSON", message: schemaError, tint: .orange) {
+                ChromeButton(title: "Edit Schema", systemImage: "pencil") { tab = .schema }
             }
         } else if doc.schemaText.isEmpty {
-            ContentUnavailableView {
-                Label("No schema", systemImage: "checkmark.shield")
-            } description: {
-                Text("Add a schema to see validation results here.")
+            EmptyState(systemImage: "checklist", title: "No schema", message: "Add a schema to see validation results here.") {
+                ChromeButton(title: "Infer from JSON", systemImage: "wand.and.stars") { doc.inferSchema() }
+                    .disabled(doc.document == nil)
+                ChromeButton(title: "Edit Schema", systemImage: "pencil") { tab = .schema }
             }
         } else if doc.document == nil {
-            ContentUnavailableView {
-                Label("Waiting for valid JSON", systemImage: "clock")
-            } description: {
-                Text("Fix the document's syntax errors to validate it.")
-            }
+            EmptyState(systemImage: "clock", title: doc.parseError == nil ? "Waiting for JSON" : "Waiting for valid JSON", message: doc.parseError == nil ? "Paste or type a document to validate it." : "Fix the document's syntax errors to validate it.")
         } else if doc.validationErrors.isEmpty {
-            ContentUnavailableView {
-                Label("Valid", systemImage: "checkmark.circle.fill")
-            } description: {
-                Text("\(doc.title) satisfies this schema.")
-            }
-            .foregroundStyle(.green)
+            EmptyState(systemImage: "checkmark.circle.fill", title: "Valid", message: "\(doc.title) satisfies this schema.", tint: .green)
         } else {
             List(doc.validationErrors) { error in
                 ValidationErrorRow(error: error)

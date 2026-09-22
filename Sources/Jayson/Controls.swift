@@ -7,6 +7,8 @@ import SwiftUI
 enum Chrome {
     static let sidebarWidth: CGFloat = 248
     static let panelWidth: CGFloat = 380
+    /// Narrowest usable document area (tabs + Format/Clean + view switcher).
+    static let minDocumentWidth: CGFloat = 560
     static let headerHeight: CGFloat = 52
     static let tabBarHeight: CGFloat = 44
     static let statusBarHeight: CGFloat = 26
@@ -272,5 +274,46 @@ struct Hairline: View {
         Rectangle()
             .fill(Chrome.hairline)
             .frame(width: vertical ? 1 : nil, height: vertical ? nil : 1)
+    }
+}
+
+/// Compact empty/placeholder state that always fills its container and stays centred,
+/// in the same visual language as the rest of the chrome.
+struct EmptyState<Actions: View>: View {
+    let systemImage: String
+    let title: String
+    var message: String? = nil
+    var tint: Color = .secondary
+    @ViewBuilder var actions: Actions
+
+    init(systemImage: String, title: String, message: String? = nil, tint: Color = .secondary, @ViewBuilder actions: () -> Actions = { EmptyView() }) {
+        self.systemImage = systemImage
+        self.title = title
+        self.message = message
+        self.tint = tint
+        self.actions = actions()
+    }
+
+    var body: some View {
+        VStack(spacing: 10) {
+            Image(systemName: systemImage)
+                .font(.system(size: 26, weight: .light))
+                .foregroundStyle(tint == .secondary ? Color.secondary.opacity(0.6) : tint)
+            Text(title)
+                .font(.system(size: 13, weight: .medium))
+                .foregroundStyle(.primary)
+            if let message {
+                Text(message)
+                    .font(Chrome.captionFont)
+                    .foregroundStyle(.secondary)
+                    .multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            HStack(spacing: 8) { actions }
+                .padding(.top, 4)
+        }
+        .padding(24)
+        .frame(maxWidth: 360)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }

@@ -27,25 +27,18 @@ struct JSONTreeView: View {
                     }
                 }
             } else if let error = model.parseError {
-                ContentUnavailableView {
-                    Label("Invalid JSON", systemImage: "exclamationmark.triangle")
-                } description: {
-                    Text(error.localizedDescription)
-                } actions: {
-                    Button("Go to Error") { model.jumpToParseError() }
-                    Button("Clean Up") { model.clean() }
+                EmptyState(systemImage: "exclamationmark.triangle", title: "Invalid JSON", message: error.localizedDescription, tint: .orange) {
+                    ChromeButton(title: "Go to Error", systemImage: "arrow.right.circle") { model.jumpToParseError() }
+                    ChromeButton(title: "Clean Up", systemImage: "sparkles") { model.clean() }
                 }
             } else {
-                ContentUnavailableView {
-                    Label("No JSON", systemImage: "curlybraces")
-                } description: {
-                    Text("Paste JSON on the left, open a file, or load a URL.")
-                } actions: {
-                    Button("Paste") { model.pasteAndFormat() }
-                    Button("Open…") { model.openFile() }
+                EmptyState(systemImage: "curlybraces", title: "Nothing to show yet", message: "Paste or type JSON in the editor, open a file, or drop one anywhere in this window.") {
+                    ChromeButton(title: "Paste", systemImage: "doc.on.clipboard") { model.pasteAndFormat() }
+                    ChromeButton(title: "Open…", systemImage: "folder") { model.openFile() }
                 }
             }
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 }
 

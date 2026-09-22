@@ -8,6 +8,9 @@ struct SourcePane: View {
         @Bindable var model = model
         VStack(spacing: 0) {
             SourceEditor(text: $model.sourceText, highlight: model.editorHighlight, highlightTick: model.editorHighlightTick)
+                .overlay(alignment: .topLeading) {
+                    if model.sourceText.isEmpty { editorPlaceholder }
+                }
             if let error = model.parseError {
                 Hairline()
                 HStack(spacing: 8) {
@@ -22,6 +25,27 @@ struct SourcePane: View {
                 .background(Color.orange.opacity(0.10))
             }
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    /// Shown inside the empty editor, aligned with where the caret sits.
+    private var editorPlaceholder: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Text("Paste or type JSON here")
+                .font(.system(size: 12.5, design: .monospaced))
+                .foregroundStyle(.tertiary)
+            VStack(alignment: .leading, spacing: 3) {
+                Text("⌥⇧⌘V  paste and format")
+                Text("⌘O  open a file")
+                Text("⇧⌘O  load from a URL")
+            }
+            .font(Chrome.captionFont)
+            .foregroundStyle(.quaternary)
+            .padding(.top, 4)
+        }
+        .padding(.leading, 11)
+        .padding(.top, 8)
+        .allowsHitTesting(false)
     }
 }
 
@@ -50,6 +74,7 @@ struct TreePane: View {
                     .frame(height: 220)
             }
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Chrome.contentBackground)
     }
 }
@@ -70,11 +95,9 @@ struct ResultsList: View {
             .padding(.vertical, 6)
             Hairline()
             if let error = model.searchError {
-                ContentUnavailableView {
-                    Label("Invalid query", systemImage: "exclamationmark.triangle")
-                } description: {
-                    Text(error)
-                }
+                EmptyState(systemImage: "exclamationmark.triangle", title: "Invalid query", message: error, tint: .orange)
+            } else if model.hits.isEmpty {
+                EmptyState(systemImage: "magnifyingglass", title: "No matches", message: model.searchMode == .jsonPath ? "The query is valid but selected nothing." : "Nothing in the document contains this text.")
             } else {
                 List(model.hits, selection: Binding(get: { model.currentHitPath }, set: { _ in })) { hit in
                     HStack(spacing: 8) {
@@ -101,6 +124,7 @@ struct ResultsList: View {
                 .scrollContentBackground(.hidden)
             }
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
         .background(Chrome.contentBackground)
     }
 
