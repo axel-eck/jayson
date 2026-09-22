@@ -1,6 +1,6 @@
 import Foundation
 
-public struct JSONParseError: Error, LocalizedError, Equatable {
+public struct JSONParseError: Error, LocalizedError, Equatable, Sendable {
     public let message: String
     /// 1-based line number.
     public let line: Int
@@ -8,6 +8,13 @@ public struct JSONParseError: Error, LocalizedError, Equatable {
     public let column: Int
     /// 0-based byte offset.
     public let offset: Int
+
+    public init(message: String, line: Int, column: Int, offset: Int) {
+        self.message = message
+        self.line = line
+        self.column = column
+        self.offset = offset
+    }
 
     public var errorDescription: String? { "Line \(line), column \(column): \(message)" }
 }

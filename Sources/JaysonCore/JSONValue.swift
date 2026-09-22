@@ -351,7 +351,7 @@ public struct ValuePath: Hashable, Sendable, CustomStringConvertible {
 
 // MARK: - Path access & mutation
 
-public enum JSONError: Error, LocalizedError, Equatable {
+public enum JSONError: Error, LocalizedError, Equatable, Sendable {
     case pathNotFound(ValuePath)
     case notAnArray(ValuePath)
     case notAnObject(ValuePath)

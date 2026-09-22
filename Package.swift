@@ -14,8 +14,7 @@ let package = Package(
         .executableTarget(
             name: "Jayson",
             dependencies: ["JaysonCore"],
-            path: "Sources/Jayson",
-            resources: [.process("Resources")]
+            path: "Sources/Jayson"
         ),
         // Lightweight test runner (`swift run JaysonCoreChecks`). Used instead of XCTest/Testing
         // because those frameworks are not available with Command Line Tools alone.
