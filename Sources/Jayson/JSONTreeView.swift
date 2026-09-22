@@ -2,7 +2,7 @@ import SwiftUI
 import JaysonCore
 
 struct JSONTreeView: View {
-    @Environment(AppModel.self) private var model
+    @Environment(DocumentModel.self) private var model
 
     var body: some View {
         @Bindable var model = model
@@ -12,7 +12,9 @@ struct JSONTreeView: View {
                     List(selection: $model.selectedPath) {
                         TreeNodeRow(component: nil, value: document, path: .root)
                     }
-                    .listStyle(.inset)
+                    .listStyle(.plain)
+                    .scrollContentBackground(.hidden)
+                    .background(Chrome.contentBackground)
                     .font(Theme.treeFont)
                     .onChange(of: model.revealRequest) { _, request in
                         guard let request else { return }
@@ -57,7 +59,7 @@ struct TreeNodeRow: View {
     let component: PathComponent?
     let value: JSONValue
     let path: ValuePath
-    @Environment(AppModel.self) private var model
+    @Environment(DocumentModel.self) private var model
 
     var body: some View {
         if value.isContainer {
@@ -79,11 +81,13 @@ struct TreeNodeRow: View {
             }
             .tag(path)
             .id(path)
+            .listRowSeparator(.hidden)
             .listRowBackground(rowBackground)
         } else {
             label
                 .tag(path)
                 .id(path)
+                .listRowSeparator(.hidden)
                 .listRowBackground(rowBackground)
         }
     }
@@ -146,12 +150,12 @@ struct NodeLabel: View {
                 Text(key)
                     .foregroundStyle(Color(nsColor: Theme.key))
                     .fontWeight(.medium)
-                Text(":").foregroundStyle(.tertiary)
+                Text(":").foregroundStyle(Color(nsColor: Theme.punctuation))
             case .index(let index):
-                Text(String(index)).foregroundStyle(.secondary)
-                Text(":").foregroundStyle(.tertiary)
+                Text(String(index)).foregroundStyle(Color(nsColor: Theme.index))
+                Text(":").foregroundStyle(Color(nsColor: Theme.punctuation))
             case nil:
-                Text("$").foregroundStyle(.secondary)
+                Text("$").foregroundStyle(Color(nsColor: Theme.index))
             }
 
             valueText
@@ -176,15 +180,27 @@ struct NodeLabel: View {
             }
         }
         .help(path.jsonPathString)
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel(accessibilityText)
+    }
+
+    private var accessibilityText: String {
+        let name: String
+        switch component {
+        case .key(let key): name = key
+        case .index(let index): name = "item \(index)"
+        case nil: name = "root"
+        }
+        return "\(name): \(JSONFormatter.preview(value, maxLength: 60))"
     }
 
     @ViewBuilder
     private var valueText: some View {
         switch value {
         case .object(let object):
-            Text(object.isEmpty ? "{}" : "{ … }").foregroundStyle(.secondary)
+            Text(object.isEmpty ? "{}" : "{ … }").foregroundStyle(Color(nsColor: Theme.punctuation))
         case .array(let array):
-            Text(array.isEmpty ? "[]" : "[ … ]").foregroundStyle(.secondary)
+            Text(array.isEmpty ? "[]" : "[ … ]").foregroundStyle(Color(nsColor: Theme.punctuation))
         case .string(let string):
             Text(verbatim: "\"\(string.replacingOccurrences(of: "\n", with: "⏎"))\"")
                 .foregroundStyle(Theme.color(for: value))
@@ -201,7 +217,7 @@ struct NodeLabel: View {
 struct NodeContextMenu: View {
     let value: JSONValue
     let path: ValuePath
-    @Environment(AppModel.self) private var model
+    @Environment(DocumentModel.self) private var model
 
     private var isArrayElement: Bool { path.last?.index != nil }
     private var isObjectMember: Bool { path.last?.key != nil }

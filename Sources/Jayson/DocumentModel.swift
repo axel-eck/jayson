@@ -85,7 +85,27 @@ private struct ValidationOutcome: Sendable {
 
 @Observable
 @MainActor
-final class AppModel {
+final class DocumentModel: Identifiable {
+    let id = UUID()
+    /// File or remote URL this document was loaded from, if any.
+    var sourceURL: URL?
+    var customTitle: String?
+    /// Called when a schema is inferred/loaded so the workspace can add it to its library.
+    var onSchemaInstalled: ((String, String) -> Void)?
+
+    var title: String {
+        if let customTitle, !customTitle.isEmpty { return customTitle }
+        if let sourceURL { return sourceURL.isFileURL ? sourceURL.lastPathComponent : (sourceURL.host ?? sourceURL.absoluteString) }
+        return "Untitled"
+    }
+
+    /// Which library schema (if any) this document is validated against.
+    var schemaItemID: UUID?
+
+    init(text: String = "") {
+        if !text.isEmpty { replaceSource(with: text, parseNow: true) }
+    }
+
     // MARK: Document
 
     var sourceText: String = "" {
@@ -157,7 +177,6 @@ final class AppModel {
     private var validationTask: Task<Void, Never>?
     private var statusTask: Task<Void, Never>?
     private var revealTick = 0
-    private var hasLoadedOnce = false
 
     // MARK: - Formatting helpers
 
@@ -172,14 +191,6 @@ final class AppModel {
     }
 
     // MARK: - Loading
-
-    func loadSampleIfEmpty() {
-        guard !hasLoadedOnce else { return }
-        hasLoadedOnce = true
-        if sourceText.isEmpty {
-            replaceSource(with: SampleData.json, parseNow: true)
-        }
-    }
 
     /// Replaces the editor text and re-parses. Registers an undo step.
     func replaceSource(with text: String, parseNow: Bool = true, actionName: String? = nil) {
@@ -415,12 +426,12 @@ final class AppModel {
                     } else {
                         self.replaceSource(with: text, actionName: "Open")
                     }
+                    self.sourceURL = url
                     self.note("Loaded \(url.isFileURL ? url.lastPathComponent : url.absoluteString)")
                 case .schema:
-                    self.schemaText = text
-                    self.schemaSourceDescription = url.isFileURL ? url.lastPathComponent : url.absoluteString
-                    self.showSchemaPanel = true
-                    self.note("Loaded schema from \(self.schemaSourceDescription ?? "")")
+                    let name = url.isFileURL ? url.lastPathComponent : (url.host.map { $0 + url.path } ?? url.absoluteString)
+                    self.installSchema(text: text, source: name)
+                    self.note("Loaded schema from \(name)")
                 }
             } catch {
                 self?.alertMessage = "Could not load \(url.absoluteString)\n\(error.localizedDescription)"
@@ -613,19 +624,12 @@ final class AppModel {
     }
 
     private func newItemTemplate(for arrayPath: ValuePath, elements: [JSONValue]) -> (JSONValue, String) {
-        var instanceOptions = SchemaInstanceOptions()
-        instanceOptions.useSampleValues = false
-        if let schemaDocument, let itemSchema = SchemaLocator.newItemSchema(forArrayAt: arrayPath, in: schemaDocument) {
-            return (SchemaInstanceGenerator.makeInstance(from: itemSchema, root: schemaDocument, options: instanceOptions), "from the loaded schema")
+        let result = ArrayItemTemplate.make(forArrayAt: arrayPath, elements: elements, schema: schemaDocument)
+        switch result.source {
+        case .schema: return (result.value, "from the loaded schema")
+        case .empty: return (result.value, "(empty object)")
+        case .inferredFromSiblings(let count): return (result.value, "matching the shape of the other \(count) item\(count == 1 ? "" : "s")")
         }
-        if elements.isEmpty {
-            return (.object(JSONObject()), "(empty object)")
-        }
-        var inferenceOptions = SchemaInferenceOptions()
-        inferenceOptions.addSchemaKeyword = false
-        inferenceOptions.detectFormats = true
-        let inferred = SchemaInferrer.infer(fromSamples: elements, options: inferenceOptions)
-        return (SchemaInstanceGenerator.makeInstance(from: inferred, options: instanceOptions), "matching the shape of the other \(elements.count) item\(elements.count == 1 ? "" : "s")")
     }
 
     /// Schema inferred from an array's existing elements, shown to the user on request.
@@ -704,31 +708,41 @@ final class AppModel {
 
     // MARK: - Schema
 
+    /// Sets the active schema text and tells the workspace about it (library + panel).
+    func installSchema(text: String, source: String) {
+        schemaText = text
+        schemaSourceDescription = source
+        showSchemaPanel = true
+        onSchemaInstalled?(text, source)
+    }
+
+    /// Applies a schema without reporting it back (used when picking from the library).
+    func useSchema(text: String, source: String?, itemID: UUID?) {
+        schemaItemID = itemID
+        schemaText = text
+        schemaSourceDescription = source
+    }
+
     func inferSchema() {
         guard let document else { reportParseProblem(); return }
         var options = SchemaInferenceOptions()
         options.detectFormats = true
         let schema = SchemaInferrer.infer(from: document, options: options)
-        schemaText = JSONFormatter.format(schema, options: JSONFormatOptions(indent: indent.indent))
-        schemaSourceDescription = "inferred from the current JSON"
-        showSchemaPanel = true
+        installSchema(text: JSONFormatter.format(schema, options: JSONFormatOptions(indent: indent.indent)), source: "Inferred from \(title)")
         note("Inferred a schema from the current JSON")
     }
 
     func inferSchemaFromArray(at path: ValuePath) {
         guard let schema = inferredItemSchema(forArrayAt: path) else { return }
-        schemaText = JSONFormatter.format(schema, options: JSONFormatOptions(indent: indent.indent))
-        schemaSourceDescription = "inferred from items of \(path.jsonPathString)"
-        showSchemaPanel = true
+        installSchema(text: JSONFormatter.format(schema, options: JSONFormatOptions(indent: indent.indent)), source: "Items of \(path.jsonPathString)")
     }
 
     func newBlankSchema() {
-        schemaText = SampleData.schemaTemplate
-        schemaSourceDescription = "new schema"
-        showSchemaPanel = true
+        installSchema(text: SampleData.schemaTemplate, source: "New schema")
     }
 
     func clearSchema() {
+        schemaItemID = nil
         schemaText = ""
         schemaSourceDescription = nil
     }

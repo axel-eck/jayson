@@ -7,9 +7,12 @@ struct JaysonApp: App {
 
     var body: some Scene {
         WindowGroup("Jayson") {
-            ContentView()
+            MainWindow()
+                .background(WindowConfigurator())
         }
-        .defaultSize(width: 1240, height: 780)
+        .windowStyle(.hiddenTitleBar)
+        .windowToolbarStyle(.unifiedCompact(showsTitle: false))
+        .defaultSize(width: 1320, height: 820)
         .commands { AppCommands() }
     }
 }
@@ -19,96 +22,140 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // When launched as a bare executable (`swift run`) there is no bundle; behave like an app anyway.
         NSApp.setActivationPolicy(.regular)
         NSApp.activate(ignoringOtherApps: true)
+        // Debug aid: JAYSON_APPEARANCE=dark|light forces an appearance for screenshots/tests.
+        switch ProcessInfo.processInfo.environment["JAYSON_APPEARANCE"] {
+        case "dark": NSApp.appearance = NSAppearance(named: .darkAqua)
+        case "light": NSApp.appearance = NSAppearance(named: .aqua)
+        default: break
+        }
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { true }
 }
 
-// MARK: - Focused model plumbing
-
-struct AppModelFocusedKey: FocusedValueKey {
-    typealias Value = AppModel
-}
-
-extension FocusedValues {
-    var appModel: AppModel? {
-        get { self[AppModelFocusedKey.self] }
-        set { self[AppModelFocusedKey.self] = newValue }
+/// Applies the flat window chrome: transparent title bar with our own header underneath it.
+struct WindowConfigurator: NSViewRepresentable {
+    func makeNSView(context: Context) -> NSView {
+        let view = NSView()
+        DispatchQueue.main.async {
+            guard let window = view.window else { return }
+            window.titlebarAppearsTransparent = true
+            window.titleVisibility = .hidden
+            window.styleMask.insert(.fullSizeContentView)
+            window.isMovableByWindowBackground = false
+            window.backgroundColor = NSColor(name: nil) { appearance in
+                appearance.bestMatch(from: [.aqua, .darkAqua]) == .darkAqua ? NSColor(hex: 0x171718) : .white
+            }
+            window.toolbar = nil
+        }
+        return view
     }
+
+    func updateNSView(_ nsView: NSView, context: Context) {}
 }
 
 // MARK: - Menu commands
 
 struct AppCommands: Commands {
-    @FocusedValue(\.appModel) private var model
+    @FocusedValue(\.workspace) private var workspace
+    @FocusedValue(\.document) private var document
 
     var body: some Commands {
-        CommandGroup(after: .newItem) {
-            Button("Open JSON…") { model?.openFile() }
+        CommandGroup(replacing: .newItem) {
+            Button("New Document") { workspace?.newDocument(select: true) }
+                .keyboardShortcut("n", modifiers: .command)
+            Button("New Document from Clipboard") { workspace?.newDocumentFromPasteboard() }
+                .keyboardShortcut("n", modifiers: [.command, .option])
+            Button("Open…") { workspace?.openDocumentFromFile() }
                 .keyboardShortcut("o", modifiers: .command)
-            Button("Open JSON from URL…") { model?.urlPrompt = .json }
-                .keyboardShortcut("o", modifiers: [.command, .shift])
+            Button("Open from URL…") {
+                guard let workspace else { return }
+                let doc = workspace.newDocument(select: true)
+                doc.urlPrompt = .json
+            }
+            .keyboardShortcut("o", modifiers: [.command, .shift])
             Divider()
-            Button("Save JSON As…") { model?.saveAs() }
+            Button("Close Document") {
+                guard let workspace else { return }
+                if workspace.documents.count > 1 {
+                    workspace.closeSelectedDocument()
+                } else {
+                    NSApp.keyWindow?.performClose(nil)
+                }
+            }
+            .keyboardShortcut("w", modifiers: .command)
+            Divider()
+            Button("Save As…") { document?.saveAs() }
                 .keyboardShortcut("s", modifiers: [.command, .shift])
         }
 
         CommandGroup(after: .pasteboard) {
             Divider()
-            Button("Paste and Format") { model?.pasteAndFormat() }
+            Button("Paste and Format") { document?.pasteAndFormat() }
                 .keyboardShortcut("v", modifiers: [.command, .shift, .option])
-            Button("Copy Formatted JSON") { model?.copyFormatted() }
+            Button("Copy Formatted JSON") { document?.copyFormatted() }
                 .keyboardShortcut("c", modifiers: [.command, .shift])
-            Button("Copy Minified JSON") { model?.copyMinified() }
+            Button("Copy Minified JSON") { document?.copyMinified() }
                 .keyboardShortcut("c", modifiers: [.command, .shift, .option])
         }
 
         CommandGroup(after: .textEditing) {
             Divider()
-            Button("Find in JSON") { model?.focusSearch(mode: .text) }
+            Button("Find in JSON") { workspace?.focusSidebarSearch(mode: .text) }
                 .keyboardShortcut("f", modifiers: .command)
-            Button("Query with JSONPath") { model?.focusSearch(mode: .jsonPath) }
+            Button("Query with JSONPath") { workspace?.focusSidebarSearch(mode: .jsonPath) }
                 .keyboardShortcut("p", modifiers: [.command, .shift])
-            Button("Find Next") { model?.nextHit() }
+            Button("Find Next") { document?.nextHit() }
                 .keyboardShortcut("g", modifiers: .command)
-            Button("Find Previous") { model?.previousHit() }
+            Button("Find Previous") { document?.previousHit() }
                 .keyboardShortcut("g", modifiers: [.command, .shift])
         }
 
         CommandMenu("JSON") {
-            Button("Format") { model?.format() }
+            Button("Format") { document?.format() }
                 .keyboardShortcut("f", modifiers: [.command, .shift])
-            Button("Minify") { model?.minify() }
+            Button("Minify") { document?.minify() }
                 .keyboardShortcut("m", modifiers: [.command, .shift])
-            Button("Clean Up") { model?.clean() }
+            Button("Clean Up") { document?.clean() }
                 .keyboardShortcut("k", modifiers: [.command, .shift])
-            Button("Sort Keys") { model?.sortKeysNow() }
+            Button("Sort Keys") { document?.sortKeysNow() }
             Divider()
-            Button("Expand All") { model?.expandAll() }
+            Button("Expand All") { document?.expandAll() }
                 .keyboardShortcut("e", modifiers: [.command, .option])
-            Button("Collapse All") { model?.collapseAll() }
+            Button("Collapse All") { document?.collapseAll() }
                 .keyboardShortcut("e", modifiers: [.command, .option, .shift])
             Divider()
-            Button("Load Sample JSON") { model?.replaceSource(with: SampleData.json, actionName: "Load Sample") }
+            Button("Load Sample JSON") { document?.replaceSource(with: SampleData.json, actionName: "Load Sample") }
         }
 
         CommandMenu("Schema") {
-            Button("Infer Schema from JSON") { model?.inferSchema() }
+            Button("Infer Schema from JSON") { document?.inferSchema() }
                 .keyboardShortcut("i", modifiers: [.command, .shift])
-            Button("New Blank Schema") { model?.newBlankSchema() }
+            Button("New Blank Schema") { document?.newBlankSchema() }
             Divider()
-            Button("Open Schema File…") { model?.openSchemaFile() }
-            Button("Load Schema from URL…") { model?.urlPrompt = .schema }
-            Button("Save Schema As…") { model?.saveAs(schema: true) }
+            Button("Open Schema File…") { document?.openSchemaFile() }
+            Button("Load Schema from URL…") { document?.urlPrompt = .schema }
+            Button("Save Schema As…") { document?.saveAs(schema: true) }
             Divider()
-            Button("Validate Now") { model?.validateNow() }
+            Button("Validate Now") { document?.validateNow() }
                 .keyboardShortcut("r", modifiers: .command)
-            Button("Format Schema") { model?.formatSchema() }
+            Button("Format Schema") { document?.formatSchema() }
+        }
+
+        CommandGroup(after: .sidebar) {
+            Button(workspace?.isSidebarVisible == true ? "Hide Sidebar" : "Show Sidebar") { workspace?.toggleSidebar() }
+                .keyboardShortcut("s", modifiers: [.command, .control])
+            Button(workspace?.isSchemaPanelVisible == true ? "Hide Schema Panel" : "Show Schema Panel") { workspace?.toggleSchemaPanel() }
+                .keyboardShortcut("i", modifiers: [.command, .option])
             Divider()
-            Button(model?.showSchemaPanel == true ? "Hide Schema Panel" : "Show Schema Panel") {
-                model?.showSchemaPanel.toggle()
-            }
-            .keyboardShortcut("i", modifiers: [.command, .option])
+            Button("Source Only") { workspace?.viewMode = .source }.keyboardShortcut("1", modifiers: .command)
+            Button("Split") { workspace?.viewMode = .split }.keyboardShortcut("2", modifiers: .command)
+            Button("Tree Only") { workspace?.viewMode = .tree }.keyboardShortcut("3", modifiers: .command)
+            Divider()
+            Button("Next Document") { workspace?.selectNextDocument(offset: 1) }
+                .keyboardShortcut("]", modifiers: [.command, .shift])
+            Button("Previous Document") { workspace?.selectNextDocument(offset: -1) }
+                .keyboardShortcut("[", modifiers: [.command, .shift])
         }
     }
 }

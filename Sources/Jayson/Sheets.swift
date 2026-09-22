@@ -3,7 +3,7 @@ import JaysonCore
 
 /// Sheet for editing a value as JSON, renaming a key, or adding a property.
 struct EditSheet: View {
-    @Environment(AppModel.self) private var model
+    @Environment(DocumentModel.self) private var model
     @Environment(\.dismiss) private var dismiss
     @State var edit: PendingEdit
     @State private var errorMessage: String?
@@ -25,7 +25,7 @@ struct EditSheet: View {
                     .frame(minHeight: 220)
                     .clipShape(RoundedRectangle(cornerRadius: 6))
                     .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(.separator))
-                Text("Any JSON value is accepted, including objects and arrays.")
+                Text("Any JSON value is accepted, including objects and arrays. Press ⌘↩ to save.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             case .renameKey:
@@ -55,7 +55,7 @@ struct EditSheet: View {
                 Button("Cancel", role: .cancel) { dismiss() }
                     .keyboardShortcut(.cancelAction)
                 Button(saveTitle, action: save)
-                    .keyboardShortcut(.defaultAction)
+                    .keyboardShortcut(.return, modifiers: .command)
             }
         }
         .padding(20)
@@ -91,7 +91,7 @@ struct EditSheet: View {
 /// Sheet asking for a URL to load JSON or a schema from.
 struct URLPromptSheet: View {
     let target: URLPromptTarget
-    @Environment(AppModel.self) private var model
+    @Environment(DocumentModel.self) private var model
     @Environment(\.dismiss) private var dismiss
     @AppStorage("lastURL") private var urlText = ""
     @State private var errorMessage: String?

@@ -104,6 +104,9 @@ struct SourceEditor: NSViewRepresentable {
                 textView.setSelectedRange(NSRange(location: selection.location, length: 0))
             }
             JSONSyntaxHighlighter.apply(to: textView)
+            if selection.location == 0 {
+                textView.scroll(.zero)
+            }
         }
 
         func textDidChange(_ notification: Notification) {
@@ -130,7 +133,7 @@ enum JSONSyntaxHighlighter {
     static let maxLength = 400_000
 
     private static let regex: NSRegularExpression = {
-        let pattern = #"("(?:[^"\\]|\\.)*")(\s*:)?|(-?\b\d+(?:\.\d+)?(?:[eE][+-]?\d+)?\b)|\b(true|false|null)\b"#
+        let pattern = #"("(?:[^"\\]|\\.)*")(\s*:)?|(-?\b\d+(?:\.\d+)?(?:[eE][+-]?\d+)?\b)|\b(true|false)\b|\b(null)\b|([{}\[\],:])"#
         return try! NSRegularExpression(pattern: pattern)
     }()
 
@@ -151,6 +154,10 @@ enum JSONSyntaxHighlighter {
                     storage.addAttribute(.foregroundColor, value: Theme.number, range: match.range(at: 3))
                 } else if match.range(at: 4).location != NSNotFound {
                     storage.addAttribute(.foregroundColor, value: Theme.keyword, range: match.range(at: 4))
+                } else if match.range(at: 5).location != NSNotFound {
+                    storage.addAttribute(.foregroundColor, value: Theme.null, range: match.range(at: 5))
+                } else if match.range(at: 6).location != NSNotFound {
+                    storage.addAttribute(.foregroundColor, value: Theme.punctuation, range: match.range(at: 6))
                 }
             }
             _ = string

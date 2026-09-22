@@ -6,6 +6,8 @@ suite("TextSearch") { runTextSearchChecks() }
 suite("SchemaValidator") { runSchemaValidatorChecks() }
 suite("SchemaInference") { runSchemaInferenceChecks() }
 suite("SchemaInstance") { runSchemaInstanceChecks() }
+suite("SchemaLocator") { runSchemaLocatorChecks() }
+suite("ArrayItemTemplate") { runArrayItemTemplateChecks() }
 
 print("")
 if checkFailures.isEmpty {
