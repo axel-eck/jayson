@@ -86,12 +86,18 @@ private struct ValidationOutcome: Sendable {
 @Observable
 @MainActor
 final class DocumentModel: Identifiable {
-    let id = UUID()
+    let id: UUID
     /// File or remote URL this document was loaded from, if any.
-    var sourceURL: URL?
-    var customTitle: String?
+    var sourceURL: URL? {
+        didSet { if sourceURL != oldValue { onStateChanged?() } }
+    }
+    var customTitle: String? {
+        didSet { if customTitle != oldValue { onStateChanged?() } }
+    }
     /// Called when a schema is inferred/loaded so the workspace can add it to its library.
     var onSchemaInstalled: ((String, String) -> Void)?
+    /// Called whenever something worth persisting across launches changes.
+    var onStateChanged: (() -> Void)?
 
     var title: String {
         if let customTitle, !customTitle.isEmpty { return customTitle }
@@ -100,9 +106,12 @@ final class DocumentModel: Identifiable {
     }
 
     /// Which library schema (if any) this document is validated against.
-    var schemaItemID: UUID?
+    var schemaItemID: UUID? {
+        didSet { if schemaItemID != oldValue { onStateChanged?() } }
+    }
 
-    init(text: String = "") {
+    init(id: UUID = UUID(), text: String = "") {
+        self.id = id
         if !text.isEmpty { replaceSource(with: text, parseNow: true) }
     }
 
@@ -110,8 +119,9 @@ final class DocumentModel: Identifiable {
 
     var sourceText: String = "" {
         didSet {
-            guard sourceText != oldValue, !suppressParse else { return }
-            scheduleParse()
+            guard sourceText != oldValue else { return }
+            onStateChanged?()
+            if !suppressParse { scheduleParse() }
         }
     }
     private(set) var document: JSONValue?
@@ -155,7 +165,11 @@ final class DocumentModel: Identifiable {
 
     var showSchemaPanel = false
     var schemaText = "" {
-        didSet { if schemaText != oldValue { scheduleValidation() } }
+        didSet {
+            guard schemaText != oldValue else { return }
+            onStateChanged?()
+            scheduleValidation()
+        }
     }
     private(set) var schemaDocument: JSONValue?
     private(set) var schemaError: String?

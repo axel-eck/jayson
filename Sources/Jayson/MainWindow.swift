@@ -38,7 +38,10 @@ struct MainWindow: View {
         .onDrop(of: [.fileURL], isTargeted: nil) { providers in
             handleDrop(providers)
         }
-        .onAppear { propagateUndoManager() }
+        .onAppear {
+            workspace.activate()
+            propagateUndoManager()
+        }
         .onChange(of: undoManager) { _, _ in propagateUndoManager() }
         .onChange(of: workspace.selectedDocumentID) { _, _ in propagateUndoManager() }
         .frame(minWidth: minimumWindowWidth, minHeight: 560)
