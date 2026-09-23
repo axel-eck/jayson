@@ -1,4 +1,4 @@
-.PHONY: build test app run install icon clean
+.PHONY: build test app run install release icon clean
 
 export SDKROOT := $(shell Scripts/sdk.sh)
 
@@ -22,6 +22,9 @@ install: app
 	rm -rf "$(INSTALL_DIR)/Jayson.app"
 	ditto build/Jayson.app "$(INSTALL_DIR)/Jayson.app"
 	@echo "Installed to $(INSTALL_DIR)/Jayson.app"
+
+release:
+	Scripts/release.sh
 
 icon:
 	Scripts/make-icon.sh

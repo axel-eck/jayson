@@ -29,6 +29,23 @@ and validate documents against them with located, human-readable errors.
 - Multiple documents as tabs, hidden title bar with a flat sidebar layout, full light and dark
   mode support, undo for tree edits.
 
+## Installing
+
+With Homebrew, from the personal tap:
+
+```sh
+brew install --cask axel-eck/tap/jayson
+```
+
+The app is not notarized yet, so Gatekeeper refuses to open it the first time. Either clear
+the quarantine flag or right-click `Jayson.app` in `/Applications` and choose Open once:
+
+```sh
+xattr -dr com.apple.quarantine /Applications/Jayson.app
+```
+
+Or build from source with `make install`, which puts the app in `~/Applications`.
+
 ## Building
 
 Jayson is a Swift Package (SwiftUI, macOS 14+). It builds with the Command Line Tools alone;
@@ -95,6 +112,22 @@ Assets/                      Logo and generated app icon
 | Source / Split / Tree view | ⌘1 / ⌘2 / ⌘3 |
 | New / close document | ⌘N / ⌘W |
 | Expand / collapse all | ⌥⌘E / ⌥⇧⌘E |
+
+## Releasing
+
+Releases are universal (Apple Silicon + Intel) zips attached to GitHub Releases, plus a
+Homebrew cask in the tap repo.
+
+1. Bump `VERSION`, commit, and tag: `git tag v0.2.0 && git push origin main v0.2.0`.
+2. The `Release` workflow builds the app on a macOS runner, creates the GitHub Release with
+   `Jayson-<version>.zip`, and, when the `HOMEBREW_TAP_TOKEN` secret is set, commits the
+   regenerated `Casks/jayson.rb` to the tap repo.
+3. Locally, `make release` does the same build and writes `dist/Jayson-<version>.zip` and
+   `dist/jayson.rb` if you prefer to publish by hand.
+
+Optional secrets for a signed and notarized build: `DEVELOPER_ID_P12`,
+`DEVELOPER_ID_P12_PASSWORD`, `NOTARY_APPLE_ID`, `NOTARY_TEAM_ID`, `NOTARY_APP_PASSWORD`.
+Without them the build is ad-hoc signed and the cask carries the Gatekeeper caveat.
 
 ## Icon
 
