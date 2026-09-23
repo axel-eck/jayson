@@ -18,6 +18,7 @@ HOMEBREW_TAP="${HOMEBREW_TAP:-axel-eck/tap}"
 DIST="dist"
 ZIP="$DIST/Jayson-$VERSION.zip"
 
+Scripts/fetch-typescript.sh
 Scripts/build-app.sh release --universal
 rm -rf "$DIST" && mkdir -p "$DIST"
 

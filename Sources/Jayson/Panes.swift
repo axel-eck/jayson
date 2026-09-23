@@ -175,6 +175,27 @@ struct StatusBar: View {
                 .help("Click to copy this path")
             }
 
+            if model.pipeline != nil {
+                Button {
+                    workspace.showPipelinePanel()
+                } label: {
+                    HStack(spacing: 5) {
+                        if model.isPipelineRunning {
+                            ProgressView().controlSize(.mini).frame(width: 7, height: 7)
+                            Text("Pipeline running")
+                        } else if let run = model.pipelineRun {
+                            StatusDot(color: run.isSuccess ? .green : (run.isDeferred ? .orange : .red))
+                            Text(run.isSuccess ? "Pipeline · \(run.duration.briefDuration)" : (run.isDeferred ? "Pipeline waiting for Run" : "Pipeline failed"))
+                        } else {
+                            StatusDot(color: .secondary.opacity(0.4))
+                            Text("Pipeline")
+                        }
+                    }
+                }
+                .buttonStyle(.plain)
+                .help("Show the pipeline panel")
+            }
+
             switch model.validationState {
             case .noSchema, .noDocument:
                 EmptyView()

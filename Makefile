@@ -1,4 +1,4 @@
-.PHONY: build test app run install release icon clean
+.PHONY: build test app run install release icon typescript clean
 
 export SDKROOT := $(shell Scripts/sdk.sh)
 
@@ -8,7 +8,13 @@ build:
 test:
 	swift run JaysonCoreChecks 2>&1 | grep -vE "ld: warning: search path"
 
-app:
+# Downloads the TypeScript compiler used by pipeline script steps (not committed, ~9 MB).
+typescript: Resources/TypeScript/typescript.js
+
+Resources/TypeScript/typescript.js:
+	Scripts/fetch-typescript.sh
+
+app: typescript
 	Scripts/build-app.sh release
 
 run: app

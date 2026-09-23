@@ -5,6 +5,7 @@ struct Sidebar: View {
     @Environment(Workspace.self) private var workspace
     @FocusState private var searchFocused: Bool
     @State private var renamingSchema: SchemaItem?
+    @State private var renamingPipeline: Pipeline?
     @State private var renameText = ""
 
     var body: some View {
@@ -18,6 +19,7 @@ struct Sidebar: View {
                 VStack(alignment: .leading, spacing: 0) {
                     documentsSection
                     schemasSection
+                    pipelinesSection
                 }
                 .padding(.bottom, 12)
             }
@@ -30,6 +32,9 @@ struct Sidebar: View {
         .onChange(of: workspace.sidebarFocusSearchRequest) { _, _ in searchFocused = true }
         .sheet(item: $renamingSchema) { item in
             renameSheet(item)
+        }
+        .sheet(item: $renamingPipeline) { item in
+            renamePipelineSheet(item)
         }
     }
 
@@ -132,6 +137,11 @@ struct Sidebar: View {
                 ) {
                     StatusDot(color: documentColor(doc))
                 } trailing: {
+                    if let run = doc.pipelineRun, doc.pipeline != nil {
+                        Image(systemName: "arrow.triangle.branch")
+                            .font(.system(size: 10.5))
+                            .foregroundStyle(run.isSuccess ? Color.green : (run.isDeferred ? Color.orange : Color.red))
+                    }
                     if doc.schemaItemID != nil {
                         Image(systemName: "checkmark.shield")
                             .font(.system(size: 10.5))
@@ -263,6 +273,100 @@ struct Sidebar: View {
         }
     }
 
+    // MARK: Pipelines
+
+    private var pipelinesSection: some View {
+        VStack(alignment: .leading, spacing: 1) {
+            SectionHeader(title: "Pipelines") {
+                Menu {
+                    Button("New Pipeline") { workspace.newPipeline() }
+                    Button("Import Pipeline…") { workspace.importPipeline() }
+                } label: {
+                    Image(systemName: "plus").font(.system(size: 11, weight: .semibold)).foregroundStyle(.secondary)
+                        .frame(width: 20, height: 20)
+                        .contentShape(Rectangle())
+                }
+                .menuStyle(.borderlessButton)
+                .menuIndicator(.hidden)
+                .fixedSize()
+                .help("New pipeline")
+            }
+            if workspace.pipelines.isEmpty {
+                Text("Chain scripts, JSONPath selections and flattening to transform JSON. Pipelines stay here and work on any document.")
+                    .font(Chrome.captionFont)
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 14)
+                    .padding(.vertical, 4)
+            }
+            ForEach(workspace.pipelines) { item in
+                let doc = workspace.selectedDocument
+                let applied = doc?.pipeline?.id == item.id
+                SidebarRow(
+                    title: item.name,
+                    subtitle: pipelineSubtitle(item),
+                    isSelected: applied,
+                    action: {
+                        guard let doc else { return }
+                        if applied {
+                            workspace.showPipelinePanel()
+                        } else {
+                            workspace.attach(item, to: doc)
+                        }
+                    }
+                ) {
+                    Image(systemName: "arrow.triangle.branch")
+                        .font(.system(size: 12))
+                        .foregroundStyle(applied ? Color.accentColor : .secondary)
+                } trailing: {
+                    if applied, let doc {
+                        if doc.isPipelineRunning {
+                            ProgressView().controlSize(.mini)
+                        } else if let run = doc.pipelineRun {
+                            StatusDot(color: run.isSuccess ? .green : (run.isDeferred ? .orange : .red))
+                        }
+                    }
+                }
+                .contextMenu {
+                    Button("Run on Current Document") { if let doc { workspace.attach(item, to: doc) } }
+                    Button("Rename…") {
+                        renameText = item.name
+                        renamingPipeline = item
+                    }
+                    Button("Duplicate") { workspace.duplicate(item) }
+                    Button("Export…") { workspace.exportPipeline(item) }
+                    Divider()
+                    if applied {
+                        Button("Detach from Document") { if let doc { workspace.detachPipeline(from: doc) } }
+                    }
+                    Button("Remove from Library", role: .destructive) { workspace.remove(item) }
+                }
+            }
+        }
+    }
+
+    private func pipelineSubtitle(_ item: Pipeline) -> String {
+        let count = item.steps.count
+        let kinds = item.steps.map { $0.kind.title }
+        let summary = Array(NSOrderedSet(array: kinds)).compactMap { $0 as? String }.joined(separator: ", ")
+        return "\(count) step\(count == 1 ? "" : "s")\(summary.isEmpty ? "" : " · " + summary)"
+    }
+
+    private func renamePipelineSheet(_ item: Pipeline) -> some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Rename Pipeline").font(.headline)
+            TextField("Name", text: $renameText)
+                .textFieldStyle(.roundedBorder)
+                .onSubmit { workspace.rename(item, to: renameText); renamingPipeline = nil }
+            HStack {
+                Spacer()
+                Button("Cancel", role: .cancel) { renamingPipeline = nil }.keyboardShortcut(.cancelAction)
+                Button("Rename") { workspace.rename(item, to: renameText); renamingPipeline = nil }.keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(20)
+        .frame(width: 380)
+    }
+
     private func saveSchema(_ item: SchemaItem) {
         let panel = NSSavePanel()
         panel.allowedContentTypes = [.json]
@@ -311,6 +415,9 @@ struct Sidebar: View {
                 workspace.selectedDocument?.note("⇧⌘F Format · ⇧⌘M Minify · ⇧⌘K Clean · ⌘F Search · ⇧⌘P Path query · ⇧⌘I Infer schema · ⌥⌘I Schema panel")
             }
             Spacer()
+            IconButton(systemImage: "arrow.triangle.branch", help: "Toggle Pipeline Panel (⌥⌘P)", isActive: workspace.isPipelinePanelVisible) {
+                workspace.togglePipelinePanel()
+            }
             IconButton(systemImage: "sidebar.right", help: "Toggle Schema Panel (⌥⌘I)", isActive: workspace.isSchemaPanelVisible) {
                 workspace.toggleSchemaPanel()
             }

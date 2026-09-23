@@ -8,6 +8,12 @@ suite("SchemaInference") { runSchemaInferenceChecks() }
 suite("SchemaInstance") { runSchemaInstanceChecks() }
 suite("SchemaLocator") { runSchemaLocatorChecks() }
 suite("ArrayItemTemplate") { runArrayItemTemplateChecks() }
+suite("Pipeline model") { runPipelineModelChecks() }
+suite("ScriptEngine") { runScriptEngineChecks() }
+suite("SchemaTypeScript") { runSchemaTypeScriptChecks() }
+suite("PipelineRunner") { runPipelineRunnerChecks() }
+suite("HTTP step") { runHTTPStepChecks() }
+suite("TypeScript") { runTypeScriptChecks() }
 
 print("")
 if checkFailures.isEmpty {

@@ -164,6 +164,34 @@ final class DocumentModel: Identifiable {
     private(set) var validationState: ValidationState = .noSchema
     private(set) var schemaSourceDescription: String?
 
+    // MARK: Pipeline
+
+    /// The library pipeline this document runs, kept in sync by the workspace.
+    var pipeline: Pipeline? {
+        didSet { if pipeline != oldValue { schedulePipelineRun() } }
+    }
+    /// Reports edits made in the panel so the workspace can store them in the library.
+    var onPipelineEdited: ((Pipeline) -> Void)?
+    /// Snapshot of the library for resolving nested pipeline steps.
+    var pipelineLibraryProvider: (() -> [Pipeline])?
+    var pipelineRun: PipelineRunResult?
+    var isPipelineRunning = false
+    /// Step whose editor and output are shown; nil selects the pipeline input.
+    var selectedStepID: UUID? {
+        didSet { if selectedStepID != oldValue { refreshStepPreview() } }
+    }
+    var stepPreview = ""
+    var stepPreviewTruncated = false
+    var stepDiagnostics: [UUID: [TypeScriptDiagnostic]] = [:]
+    var isTypeCheckPending = false
+    var scriptEditorHighlight: NSRange?
+    var scriptEditorHighlightTick = 0
+    var pipelineTask: Task<Void, Never>?
+    var previewTask: Task<Void, Never>?
+    var typeCheckTask: Task<Void, Never>?
+    /// Responses fetched by explicit runs; live runs replay them instead of hitting the network.
+    let httpCache = HTTPResponseCache()
+
     // MARK: Misc
 
     var alertMessage: String?
@@ -270,6 +298,7 @@ final class DocumentModel: Identifiable {
         }
         scheduleSearch(immediate: true)
         scheduleValidation(immediate: true)
+        schedulePipelineRun(immediate: true)
     }
 
     private func autoExpand(_ value: JSONValue) {
@@ -766,6 +795,7 @@ final class DocumentModel: Identifiable {
         let schemaText = schemaText
         let document = document
         guard !schemaText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            if schemaDocument != nil { schedulePipelineRun() }
             schemaDocument = nil
             schemaError = nil
             validationErrors = []
@@ -778,7 +808,9 @@ final class DocumentModel: Identifiable {
             guard !Task.isCancelled else { return }
             let outcome = await Task.detached(priority: .userInitiated) { Self.validate(schemaText: schemaText, document: document) }.value
             guard !Task.isCancelled, let self else { return }
+            let schemaChanged = self.schemaDocument != outcome.schema
             self.schemaDocument = outcome.schema
+            if schemaChanged { self.schedulePipelineRun() }
             self.schemaError = outcome.schemaError
             self.validationErrors = outcome.errors
             self.errorsByPath = Dictionary(grouping: outcome.errors, by: \.instancePath)
