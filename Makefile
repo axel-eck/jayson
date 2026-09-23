@@ -1,4 +1,4 @@
-.PHONY: build test app run install release icon typescript clean
+.PHONY: build test app run install release icon banner typescript clean
 
 export SDKROOT := $(shell Scripts/sdk.sh)
 
@@ -34,6 +34,9 @@ release:
 
 icon:
 	Scripts/make-icon.sh
+
+banner:
+	Scripts/make-banner.sh
 
 clean:
 	rm -rf .build build
