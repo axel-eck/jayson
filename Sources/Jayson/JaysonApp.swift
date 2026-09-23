@@ -142,11 +142,44 @@ struct AppCommands: Commands {
             Button("Format Schema") { document?.formatSchema() }
         }
 
+        CommandMenu("Pipeline") {
+            Button("New Pipeline") { workspace?.newPipeline() }
+            Button("Import Pipeline…") { workspace?.importPipeline() }
+            Divider()
+            Button("Run Pipeline") { document?.runPipelineNow() }
+                .keyboardShortcut("r", modifiers: [.command, .option])
+                .disabled(document?.pipeline == nil)
+            Button("Output as New Document") {
+                guard let workspace, let document, let output = document.pipelineRun?.output else { return }
+                let newDoc = workspace.newDocument(text: document.formatted(output), select: true)
+                newDoc.customTitle = "\(document.pipeline?.name ?? "Pipeline") → \(document.title)"
+            }
+            .keyboardShortcut("n", modifiers: [.command, .option, .shift])
+            .disabled(document?.pipelineRun?.output == nil)
+            Button("Replace Document with Output") { document?.replaceDocumentWithPipelineOutput() }
+                .disabled(document?.pipelineRun?.output == nil)
+            Button("Save Output As…") { document?.savePipelineOutput() }
+                .disabled(document?.pipelineRun?.output == nil)
+            Divider()
+            Button("Export Pipeline…") {
+                guard let workspace, let pipeline = document?.pipeline else { return }
+                workspace.exportPipeline(pipeline)
+            }
+            .disabled(document?.pipeline == nil)
+            Button("Detach Pipeline") {
+                guard let workspace, let document else { return }
+                workspace.detachPipeline(from: document)
+            }
+            .disabled(document?.pipeline == nil)
+        }
+
         CommandGroup(after: .sidebar) {
             Button(workspace?.isSidebarVisible == true ? "Hide Sidebar" : "Show Sidebar") { workspace?.toggleSidebar() }
                 .keyboardShortcut("s", modifiers: [.command, .control])
             Button(workspace?.isSchemaPanelVisible == true ? "Hide Schema Panel" : "Show Schema Panel") { workspace?.toggleSchemaPanel() }
                 .keyboardShortcut("i", modifiers: [.command, .option])
+            Button(workspace?.isPipelinePanelVisible == true ? "Hide Pipeline Panel" : "Show Pipeline Panel") { workspace?.togglePipelinePanel() }
+                .keyboardShortcut("p", modifiers: [.command, .option])
             Divider()
             Button("Source Only") { workspace?.viewMode = .source }.keyboardShortcut("1", modifiers: .command)
             Button("Split") { workspace?.viewMode = .split }.keyboardShortcut("2", modifiers: .command)
