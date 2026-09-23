@@ -26,6 +26,8 @@ public struct ScriptRunOutcome: Sendable {
     public var error: ScriptError?
     public var logs: [String]
     public var duration: TimeInterval
+    /// Variables the script assigned with `$.setVar(name, value)`.
+    public var variableUpdates: [String: JSONValue] = [:]
 }
 
 /// Everything a script can see besides its `input`.
@@ -38,6 +40,10 @@ public struct ScriptContext: Sendable {
     /// Outputs of the previous steps, available as `$.steps[i]` and `$.step("name")`.
     public var previousOutputs: [JSONValue?] = []
     public var previousNames: [String] = []
+    /// Variables of the run, available as `$.vars`.
+    public var variables: [String: JSONValue] = [:]
+    /// The current For Each iteration, available as `$.loop` (null outside a loop).
+    public var loop: TemplateContext.LoopInfo?
 
     public init(input: JSONValue, document: JSONValue? = nil, schema: JSONValue? = nil) {
         self.input = input
@@ -95,6 +101,9 @@ public enum ScriptEngine {
         js.setObject(JSONFormatter.minify(context.schema ?? .null), forKeyedSubscript: "__jayson_schemaText" as NSString)
         js.setObject(JSONFormatter.minify(.array(context.previousOutputs.map { $0 ?? .null })), forKeyedSubscript: "__jayson_stepsText" as NSString)
         js.setObject(JSONFormatter.minify(.array(context.previousNames.map { .string($0) })), forKeyedSubscript: "__jayson_stepNamesText" as NSString)
+        let variables = JSONObject(context.variables.sorted { $0.key < $1.key }.map { ($0.key, $0.value) })
+        js.setObject(JSONFormatter.minify(.object(variables)), forKeyedSubscript: "__jayson_varsText" as NSString)
+        js.setObject(JSONFormatter.minify(context.loop?.jsonValue ?? .null), forKeyedSubscript: "__jayson_loopText" as NSString)
 
         js.evaluateScript(prelude, withSourceURL: URL(string: "jayson://prelude"))
         if let exception = sink.value {
@@ -152,7 +161,12 @@ public enum ScriptEngine {
         }
         do {
             let value = try JSONParser.parse(string)
-            return ScriptRunOutcome(output: value, error: nil, logs: logs, duration: Date().timeIntervalSince(start))
+            var updates: [String: JSONValue] = [:]
+            if let updatesText = js.evaluateScript("JSON.stringify(__jayson_varUpdates)")?.toString(),
+               let parsed = try? JSONParser.parse(updatesText), let object = parsed.objectValue {
+                for (name, value) in object.members { updates[name] = value }
+            }
+            return ScriptRunOutcome(output: value, error: nil, logs: logs, duration: Date().timeIntervalSince(start), variableUpdates: updates)
         } catch {
             return ScriptRunOutcome(output: nil, error: ScriptError(message: "The result is not valid JSON: \(error.localizedDescription)"), logs: logs, duration: Date().timeIntervalSince(start))
         }
@@ -257,11 +271,14 @@ public enum ScriptEngine {
       return c;
     })();
 
+    var __jayson_varUpdates = {};
     var $ = (function () {
       var document = JSON.parse(__jayson_documentText);
       var schema = JSON.parse(__jayson_schemaText);
       var steps = JSON.parse(__jayson_stepsText);
       var stepNames = JSON.parse(__jayson_stepNamesText);
+      var vars = JSON.parse(__jayson_varsText);
+      var loop = JSON.parse(__jayson_loopText);
 
       function fn(keyOrFn) {
         if (typeof keyOrFn === "function") return keyOrFn;
@@ -293,6 +310,16 @@ public enum ScriptEngine {
           if (i < 0) throw new Error("No previous step named \\"" + ref + "\\"");
           return steps[i];
         },
+        vars: vars,
+        setVar: function (name, value) {
+          if (typeof name !== "string" || !/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) {
+            throw new Error("Variable names use letters, digits and underscores, starting with a letter: " + JSON.stringify(name));
+          }
+          var v = value === undefined ? null : JSON.parse(JSON.stringify(value));
+          vars[name] = v;
+          __jayson_varUpdates[name] = v;
+        },
+        loop: loop,
         get: get,
         flatten: function (arr, depth) {
           if (!Array.isArray(arr)) return arr;

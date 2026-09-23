@@ -192,14 +192,27 @@ final class DocumentModel: Identifiable {
     var onPipelineEdited: ((Pipeline) -> Void)?
     /// Snapshot of the library for resolving nested pipeline steps.
     var pipelineLibraryProvider: (() -> [Pipeline])?
+    /// The variable library a run starts from (`{{ vars.… }}`).
+    var variablesProvider: (() -> [String: JSONValue])?
+    /// Reports variables a run asked to save to the library.
+    var onVariablesSaved: (([String: JSONValue]) -> Void)?
     var pipelineRun: PipelineRunResult?
     var isPipelineRunning = false
     /// Step whose editor and output are shown; nil selects the pipeline input.
     var selectedStepID: UUID? {
         didSet {
             guard selectedStepID != oldValue else { return }
+            selectedIteration = 0
             onStateChanged?()
             refreshStepPreview()
+        }
+    }
+    /// For a step inside a For Each: which item's run is shown in the output pane.
+    var selectedIteration = 0 {
+        didSet {
+            guard selectedIteration != oldValue else { return }
+            refreshStepPreview()
+            scheduleTypeCheck()
         }
     }
     var stepPreview = ""

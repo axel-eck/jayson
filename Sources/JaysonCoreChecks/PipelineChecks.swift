@@ -45,6 +45,10 @@ func runPipelineModelChecks() {
                 r.failOnErrorStatus = false
                 return r
             }())),
+            PipelineStep(kind: .forEach(ForEachStep(steps: [
+                PipelineStep(kind: .setVariable(SetVariableStep(name: "id", source: .path("id")))),
+                PipelineStep(kind: .setVariable(SetVariableStep(name: "label", source: .template("#{{ loop.index }}"), saveToLibrary: true))),
+            ], concurrency: 2, errorPolicy: .skip, outputMode: .merged))),
         ])
         let data = try pipeline.exportJSON()
         let decoded = try Pipeline.importJSON(data)
@@ -52,6 +56,73 @@ func runPipelineModelChecks() {
         let text = String(decoding: data, as: UTF8.self)
         expect(text.contains("\"type\" : \"jsonPath\""), "uses a type discriminator")
         expect(text.contains("\"pipelineID\""), "pipeline reference is encoded")
+        expect(text.contains("\"errorPolicy\" : \"skip\""), "loop options are encoded")
+    }
+
+    check("step tree helpers find, edit, insert, move and remove nested steps") {
+        let inner = PipelineStep(name: "inner", kind: .flatten(depth: nil))
+        let loop = PipelineStep(name: "loop", kind: .forEach(ForEachStep(steps: [inner])))
+        var pipeline = Pipeline(name: "T", steps: [PipelineStep(name: "first", kind: .flatten(depth: 1)), loop])
+        expectEqual(pipeline.allSteps.map(\.step.name), ["first", "loop", "inner"])
+        expectEqual(pipeline.allSteps.map(\.depth), [0, 0, 1])
+        expectEqual(pipeline.entry(for: inner.id)?.parentID, loop.id)
+        expectEqual(pipeline.step(withID: inner.id)?.name, "inner")
+        expect(pipeline.updateStep(inner.id) { $0.name = "renamed" })
+        expectEqual(pipeline.step(withID: inner.id)?.name, "renamed")
+        expect(!pipeline.updateStep(UUID()) { _ in })
+
+        let added = PipelineStep(name: "added", kind: .flatten(depth: nil))
+        pipeline.insert(added, inside: loop.id)
+        expectEqual(pipeline.step(withID: loop.id)?.kind.childSteps?.map(\.name), ["renamed", "added"])
+        let between = PipelineStep(name: "between", kind: .flatten(depth: nil))
+        pipeline.insert(between, after: inner.id)
+        expectEqual(pipeline.step(withID: loop.id)?.kind.childSteps?.map(\.name), ["renamed", "between", "added"])
+        pipeline.move(added.id, by: -1)
+        expectEqual(pipeline.step(withID: loop.id)?.kind.childSteps?.map(\.name), ["renamed", "added", "between"])
+        pipeline.move(added.id, by: 5)
+        expectEqual(pipeline.step(withID: loop.id)?.kind.childSteps?.map(\.name), ["renamed", "added", "between"])
+        let replacement = pipeline.remove(inner.id)
+        expectEqual(replacement?.name, "added")
+        expectEqual(pipeline.siblings(of: added.id).map(\.name), ["added", "between"])
+        expectNil(pipeline.step(withID: inner.id))
+        let copy = pipeline.step(withID: loop.id)!.withFreshIDs()
+        expect(copy.id != loop.id)
+        expect(Set(copy.kind.childSteps!.map(\.id)).isDisjoint(with: Set(pipeline.allSteps.map(\.step.id))), "nested ids are fresh")
+    }
+
+    check("templates read the input, variables, steps, document and loop") {
+        let context = TemplateContext(
+            input: ["user": ["id": 42, "name": "Ada"]],
+            variables: ["token": "t0k", "limit": 5],
+            document: ["root": true],
+            steps: ["Login": ["access_token": "abc"], "1": [1, 2]],
+            loop: .init(index: 2, count: 9, item: ["id": 7])
+        )
+        expectEqual(context.expand("{{ user.id }}/{{ vars.token }}/{{ env.limit }}"), "42/t0k/5")
+        expectEqual(context.expand("{{ steps.Login.access_token }}|{{ steps.1[1] }}|{{ document.root }}"), "abc|2|true")
+        expectEqual(context.expand("{{ loop.index }} of {{ loop.count }}: {{ loop.item.id }}"), "2 of 9: 7")
+        expectEqual(context.expand("{{ vars.missing }}|{{ steps.Nope.x }}"), "|")
+        expectEqual(context.value(at: "vars"), ["limit": 5, "token": "t0k"])
+        expectEqual(context.value(at: ""), context.input)
+        expectEqual(TemplateContext(input: .null).expand("{{ loop.index }}"), "")
+    }
+
+    check("variable names and Set Variable sources") {
+        expect(SetVariableStep.isValidName("token_1"))
+        expect(SetVariableStep.isValidName("_x"))
+        expect(!SetVariableStep.isValidName("1x"))
+        expect(!SetVariableStep.isValidName("a-b"))
+        expect(!SetVariableStep.isValidName(""))
+        let context = TemplateContext(input: ["access_token": "abc", "expires": 3600], variables: ["base": "https://x"])
+        expectEqual(SetVariableStep(name: "t", source: .path("access_token")).resolve(in: context), "abc")
+        expectEqual(SetVariableStep(name: "t", source: .path("expires")).resolve(in: context), 3600)
+        expectEqual(SetVariableStep(name: "t", source: .path("")).resolve(in: context), context.input)
+        expectEqual(SetVariableStep(name: "t", source: .template("Bearer {{ access_token }} @ {{ vars.base }}")).resolve(in: context), "Bearer abc @ https://x")
+        expectEqual(SetVariableStep(name: "t", source: .path("nothing")).resolve(in: context), .null)
+        expectEqual(PipelineVariable.values([.init(name: "a", value: "1"), .init(name: "", value: "x"), .init(name: "a", value: "2")]), ["a": "2"])
+        expectEqual(ForEachStep.merge(item: ["id": 1], result: ["name": "n"]), ["id": 1, "name": "n"])
+        expectEqual(ForEachStep.merge(item: ["id": 1], result: [1, 2]), ["id": 1, "result": [1, 2]])
+        expectEqual(ForEachStep.merge(item: 5, result: "x"), ["item": 5, "result": "x"])
     }
 
     check("decoding tolerates missing optional fields and rejects unknown kinds") {
@@ -182,6 +253,24 @@ func runScriptEngineChecks() {
         expectEqual(outcome.output, ["Jayson Books", "object", "first", nil, 2, 2])
         let noSchema = run("$.schema")
         expectEqual(noSchema.output, .null)
+    }
+
+    check("context: $.vars, $.setVar and $.loop") {
+        var context = ScriptContext(input: sample)
+        context.variables = ["token": "abc", "n": 2]
+        context.loop = .init(index: 1, count: 3, item: ["id": 9])
+        let outcome = ScriptEngine.run(javaScript: """
+        $.setVar("seen", $.loop.item.id * $.vars.n);
+        $.setVar("obj", { a: [1, 2] });
+        return [$.vars.token, $.vars.seen, $.loop.index, $.loop.count]
+        """, context: context)
+        expectNil(outcome.error)
+        expectEqual(outcome.output, ["abc", 18, 1, 3])
+        expectEqual(outcome.variableUpdates, ["seen": 18, "obj": ["a": [1, 2]]])
+        let outside = ScriptEngine.run(javaScript: "[$.loop, $.vars]", context: ScriptContext(input: sample))
+        expectEqual(outside.output, [nil, [:]])
+        let bad = ScriptEngine.run(javaScript: "$.setVar('1x', 1); return 1", context: context)
+        expect(bad.error?.message.contains("Variable names") == true, bad.error?.message ?? "nil")
     }
 
     check("resolved promises are unwrapped") {
@@ -385,12 +474,126 @@ func runPipelineRunnerChecks() {
         expectEqual(result.output, ["S", nil])
     }
 
+    check("For Each runs the body per item, in order, with the loop context") {
+        let pipeline = Pipeline(name: "L", steps: [
+            PipelineStep(kind: .jsonPath(expression: "$.store.book[*]", firstMatchOnly: false)),
+            PipelineStep(name: "loop", kind: .forEach(ForEachStep(steps: [
+                PipelineStep(name: "title", kind: .script(language: .javascript, code: "input.title")),
+                PipelineStep(kind: .script(language: .javascript, code: "input + $.loop.index + '/' + $.loop.count + ':' + $.loop.item.price + ':' + $.vars.suffix")),
+            ], concurrency: 3))),
+        ])
+        let result = awaitValue { await runner.run(pipeline, input: sample, variables: ["suffix": "s"]) }
+        expect(result.isSuccess, result.failure?.error ?? "")
+        expectEqual(result.output, ["A0/3:8.95:s", "B1/3:12.99:s", "C2/3:22.99:s"])
+        let loopResult = result.steps[1]
+        expectEqual(loopResult.iterations.count, 3)
+        expectEqual(loopResult.iterations[1].steps[0].output, "B")
+        expect(loopResult.logs.first?.hasPrefix("Ran 3 items") == true, loopResult.logs.description)
+        let titleID = pipeline.steps[1].kind.childSteps![0].id
+        expectEqual(result.result(for: titleID)?.output, "A")
+        expectEqual(result.result(for: titleID, iteration: 2)?.output, "C")
+        expectEqual(result.loopResult(containing: titleID)?.id, pipeline.steps[1].id)
+        expectNil(result.result(for: titleID, iteration: 7))
+    }
+
+    check("For Each: merged output, error policies, empty body and non-array input") {
+        let items: JSONValue = [["id": 1], ["id": 2], ["id": 3]]
+        @Sendable func loop(_ policy: ForEachStep.ErrorPolicy, mode: ForEachStep.OutputMode = .results, code: String = "({ double: input.id * 2 })") -> Pipeline {
+            Pipeline(name: "L", steps: [PipelineStep(kind: .forEach(ForEachStep(steps: [
+                PipelineStep(kind: .script(language: .javascript, code: code)),
+            ], concurrency: 1, errorPolicy: policy, outputMode: mode)))])
+        }
+        expectEqual(awaitValue { await runner.run(loop(.fail, mode: .merged), input: items) }.output, [["id": 1, "double": 2], ["id": 2, "double": 4], ["id": 3, "double": 6]])
+
+        let failing = "if (input.id === 2) throw new Error('two'); return input.id"
+        let stop = awaitValue { await runner.run(loop(.fail, code: failing), input: items) }
+        expect(!stop.isSuccess)
+        expect(stop.failure?.error?.hasPrefix("Item 2 of 3 failed at JavaScript: two") == true, stop.failure?.error ?? "")
+        let skip = awaitValue { await runner.run(loop(.skip, code: failing), input: items) }
+        expectEqual(skip.output, [1, 3])
+        expect(skip.steps[0].logs.contains { $0.contains("1 failed") }, skip.steps[0].logs.description)
+        let null = awaitValue { await runner.run(loop(.null, code: failing), input: items) }
+        expectEqual(null.output, [1, nil, 3])
+
+        let empty = Pipeline(name: "E", steps: [PipelineStep(kind: .forEach(ForEachStep()))])
+        expectEqual(awaitValue { await runner.run(empty, input: items) }.output, items)
+        expectEqual(awaitValue { await runner.run(empty, input: []) }.output, [])
+        let wrong = awaitValue { await runner.run(empty, input: ["a": 1]) }
+        expect(wrong.failure?.error?.contains("expects an array") == true, wrong.failure?.error ?? "")
+    }
+
+    check("For Each with HTTP: requests per item, deferred while editing, cached afterwards") {
+        var request = HTTPRequestStep()
+        request.url = "data:application/json,{\"id\":{{ id }},\"n\":{{ loop.index }},\"t\":\"{{ vars.token }}\"}"
+        let pipeline = Pipeline(name: "H", steps: [PipelineStep(kind: .forEach(ForEachStep(steps: [
+            PipelineStep(kind: .httpRequest(request)),
+        ], concurrency: 4, outputMode: .merged)))])
+        let items: JSONValue = [["id": 1], ["id": 2]]
+        let cache = HTTPResponseCache()
+        var live = PipelineRunner()
+        live.networkPolicy = .cachedOnly
+        live.httpCache = cache
+        let deferred = awaitValue { [live] in await live.run(pipeline, input: items, variables: ["token": "T"]) }
+        expect(deferred.isDeferred, "loop should report the deferred request: \(deferred.failure?.error ?? "")")
+        expect(deferred.failure?.error?.hasPrefix("Item 1 of 2") == true, deferred.failure?.error ?? "")
+
+        var explicit = PipelineRunner()
+        explicit.httpCache = cache
+        let sent = awaitValue { [explicit] in await explicit.run(pipeline, input: items, variables: ["token": "T"]) }
+        expect(sent.isSuccess, sent.failure?.error ?? "")
+        expectEqual(sent.output, [["id": 1, "n": 0, "t": "T"], ["id": 2, "n": 1, "t": "T"]])
+
+        let replay = awaitValue { [live] in await live.run(pipeline, input: items, variables: ["token": "T"]) }
+        expect(replay.isSuccess, replay.failure?.error ?? "")
+        expectEqual(replay.output, sent.output)
+        let other = awaitValue { [live] in await live.run(pipeline, input: items, variables: ["token": "U"]) }
+        expect(other.isDeferred, "a different variable value is a different request")
+    }
+
+    check("Set Variable feeds later steps, nested pipelines and the library") {
+        let pipeline = Pipeline(name: "V", steps: [
+            PipelineStep(name: "Login", kind: .script(language: .javascript, code: "({ access_token: 'abc', expires: 60 })")),
+            PipelineStep(kind: .setVariable(SetVariableStep(name: "token", source: .path("access_token"), saveToLibrary: true))),
+            PipelineStep(kind: .setVariable(SetVariableStep(name: "auth", source: .template("Bearer {{ vars.token }}")))),
+            PipelineStep(kind: .setVariable(SetVariableStep(name: "ttl", source: .path("steps.Login.expires")))),
+            PipelineStep(kind: .script(language: .javascript, code: "$.setVar('fromScript', $.vars.ttl + 1); return [$.vars.token, $.vars.auth, $.vars.base]")),
+            PipelineStep(kind: .script(language: .javascript, code: "input.concat([$.vars.fromScript])")),
+        ])
+        let result = awaitValue { await runner.run(pipeline, input: sample, variables: ["base": "https://x"]) }
+        expect(result.isSuccess, result.failure?.error ?? "")
+        expectEqual(result.output, ["abc", "Bearer abc", "https://x", 61])
+        expectEqual(result.steps[1].output, result.steps[0].output, "Set Variable passes its input through")
+        expectEqual(result.savedVariables, ["token": "abc"])
+        expectEqual(result.variables["fromScript"], 61)
+        expect(result.steps[1].logs.first?.contains("saved to the library") == true, result.steps[1].logs.description)
+
+        let unnamed = Pipeline(name: "U", steps: [PipelineStep(kind: .setVariable(SetVariableStep()))])
+        expect(awaitValue { await runner.run(unnamed, input: sample) }.failure?.error?.contains("name") == true)
+        let invalid = Pipeline(name: "I", steps: [PipelineStep(kind: .setVariable(SetVariableStep(name: "a b")))])
+        expect(awaitValue { await runner.run(invalid, input: sample) }.failure?.error?.contains("not a valid") == true)
+
+        // Variables set inside a loop body stay in that iteration; library saves are collected.
+        let looped = Pipeline(name: "L", steps: [
+            PipelineStep(kind: .forEach(ForEachStep(steps: [
+                PipelineStep(kind: .setVariable(SetVariableStep(name: "last", source: .path(""), saveToLibrary: true))),
+                PipelineStep(kind: .script(language: .javascript, code: "$.vars.last")),
+            ], concurrency: 1))),
+            PipelineStep(kind: .script(language: .javascript, code: "[input, $.vars.last === undefined]")),
+        ])
+        let loopResult = awaitValue { await runner.run(looped, input: [1, 2]) }
+        expect(loopResult.isSuccess, loopResult.failure?.error ?? "")
+        expectEqual(loopResult.output, [[1, 2], true])
+        expectEqual(loopResult.savedVariables, ["last": 2])
+    }
+
     check("declarations pick the schema for the document and inference otherwise") {
         let fromSchema = PipelineRunner.declarations(input: sample, schema: ["type": "string"])
         expect(fromSchema.hasPrefix("type Input = string;\n"), fromSchema)
         expect(fromSchema.contains("declare const $: JaysonHelpers;"))
         let inferred = PipelineRunner.declarations(input: ["a": 1], schema: nil)
         expect(inferred.hasPrefix("type Input = {\n  a: number;\n};\n"), inferred)
+        expect(inferred.contains("setVar(name: string, value: unknown): void;"))
+        expect(inferred.contains("readonly loop: JaysonLoop | null;"))
         expect(PipelineRunner.declarations(input: nil, schema: nil).hasPrefix("type Input = unknown;"))
     }
 }

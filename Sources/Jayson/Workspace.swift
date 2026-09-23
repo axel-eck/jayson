@@ -54,6 +54,19 @@ final class Workspace {
     var pipelines: [Pipeline] = [] {
         didSet { if pipelines != oldValue { scheduleSessionSave(); rerunPipelines() } }
     }
+    /// Variables every pipeline run can read as `{{ vars.name }}`. Kept in their own
+    /// owner-only file (see `VariableStore`), never inside pipelines or exports.
+    var variables: [PipelineVariable] = [] {
+        didSet {
+            guard variables != oldValue else { return }
+            if isActive { VariableStore.save(variables) }
+            rerunPipelines()
+        }
+    }
+    /// The Variables sheet is open (from the menu bar or the pipeline panel).
+    var isEditingVariables = false
+    /// A document the user asked to rename (the rename sheet is attached to the window).
+    var documentToRename: DocumentModel?
 
     var isSidebarVisible = true {
         didSet { scheduleSessionSave() }
@@ -87,6 +100,7 @@ final class Workspace {
     /// Restores the previous session. The sample document appears only on the very first launch;
     /// afterwards the user gets back exactly the documents they had open when they quit.
     init() {
+        variables = VariableStore.load()
         if let session = SessionStore.load() {
             restore(session)
         } else {
@@ -135,7 +149,14 @@ final class Workspace {
         doc.onStateChanged = { [weak self] in self?.scheduleSessionSave() }
         doc.showSchemaPanel = isSchemaPanelVisible
         doc.pipelineLibraryProvider = { [weak self] in self?.pipelines ?? [] }
+        doc.variablesProvider = { [weak self] in PipelineVariable.values(self?.variables ?? []) }
+        doc.onVariablesSaved = { [weak self] saved in self?.saveVariables(saved) }
         doc.onPipelineEdited = { [weak self] pipeline in self?.update(pipeline) }
+    }
+
+    func rename(_ doc: DocumentModel, to name: String) {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        doc.customTitle = trimmed.isEmpty ? nil : trimmed
     }
 
     func select(_ doc: DocumentModel) {
@@ -255,7 +276,7 @@ final class Workspace {
             attach(doc)
             if let pipelineID = snapshot.pipelineID, let pipeline = pipelines.first(where: { $0.id == pipelineID }) {
                 doc.pipeline = pipeline
-                let stepExists = snapshot.selectedStepID.map { id in pipeline.steps.contains { $0.id == id } } ?? false
+                let stepExists = snapshot.selectedStepID.map { id in pipeline.step(withID: id) != nil } ?? false
                 doc.selectedStepID = stepExists ? snapshot.selectedStepID : pipeline.steps.last?.id
             }
             documents.append(doc)
@@ -408,6 +429,41 @@ final class Workspace {
         for doc in documents where doc.pipeline != nil {
             doc.schedulePipelineRun(immediate: true)
         }
+    }
+
+    // MARK: - Variables
+
+    func addVariable(name: String = "", value: String = "", isSecret: Bool = false) -> PipelineVariable {
+        let variable = PipelineVariable(name: name, value: value, isSecret: isSecret)
+        variables.append(variable)
+        return variable
+    }
+
+    func updateVariable(_ id: UUID, _ body: (inout PipelineVariable) -> Void) {
+        guard let index = variables.firstIndex(where: { $0.id == id }) else { return }
+        var copy = variables[index]
+        body(&copy)
+        if copy != variables[index] { variables[index] = copy }
+    }
+
+    func removeVariable(_ id: UUID) {
+        variables.removeAll { $0.id == id }
+    }
+
+    /// Stores values a Set Variable step asked to save. Existing entries keep their secret
+    /// flag; new ones are created as plain variables. Non-string values are kept as JSON text.
+    func saveVariables(_ saved: [String: JSONValue]) {
+        var updated = variables
+        for (name, value) in saved.sorted(by: { $0.key < $1.key }) {
+            let text: String
+            if case .string(let s) = value { text = s } else { text = JSONFormatter.minify(value) }
+            if let index = updated.firstIndex(where: { $0.name == name }) {
+                updated[index].value = text
+            } else {
+                updated.append(PipelineVariable(name: name, value: text, isSecret: name.lowercased().contains("token") || name.lowercased().contains("secret") || name.lowercased().contains("password")))
+            }
+        }
+        if updated != variables { variables = updated }
     }
 
     // MARK: - Chrome

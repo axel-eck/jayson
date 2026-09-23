@@ -54,7 +54,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>CFBundleDevelopmentRegion</key><string>en</string>
   <key>CFBundleExecutable</key><string>Jayson</string>
   <key>CFBundleIconFile</key><string>AppIcon</string>
-  <key>CFBundleIdentifier</key><string>com.luccasoftware.Jayson</string>
+  <key>CFBundleIdentifier</key><string>fr.axel-eck.Jayson</string>
   <key>CFBundleInfoDictionaryVersion</key><string>6.0</string>
   <key>CFBundleName</key><string>Jayson</string>
   <key>CFBundleDisplayName</key><string>Jayson</string>

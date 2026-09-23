@@ -104,3 +104,34 @@ enum SessionStore {
         }
     }
 }
+
+/// Reads and writes the pipeline variable library. It lives next to the session file but in
+/// its own file, `variables.json`, readable only by the current user (mode 0600), so tokens
+/// never end up in the session, in exported pipelines, or in world-readable files.
+enum VariableStore {
+    static let fileURL: URL = SessionStore.fileURL.deletingLastPathComponent().appendingPathComponent("variables.json")
+
+    static func load() -> [PipelineVariable] {
+        guard let data = try? Data(contentsOf: fileURL) else { return [] }
+        do {
+            return try JSONDecoder().decode([PipelineVariable].self, from: data)
+        } catch {
+            NSLog("Jayson: could not read variables at \(fileURL.path) (\(error))")
+            return []
+        }
+    }
+
+    static func save(_ variables: [PipelineVariable]) {
+        do {
+            let directory = fileURL.deletingLastPathComponent()
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            let encoder = JSONEncoder()
+            encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+            let data = try encoder.encode(variables)
+            try data.write(to: fileURL, options: [.atomic, .completeFileProtection])
+            try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: fileURL.path)
+        } catch {
+            NSLog("Jayson: could not save variables to \(fileURL.path): \(error.localizedDescription)")
+        }
+    }
+}
