@@ -7,6 +7,7 @@ import SwiftUI
 enum Chrome {
     static let sidebarWidth: CGFloat = 248
     static let panelWidth: CGFloat = 380
+    static let pipelinePanelWidth: CGFloat = 520
     /// Narrowest usable document area (tabs + Format/Clean + view switcher).
     static let minDocumentWidth: CGFloat = 560
     static let headerHeight: CGFloat = 52

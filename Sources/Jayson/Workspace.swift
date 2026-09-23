@@ -1,6 +1,7 @@
 import AppKit
 import Observation
 import SwiftUI
+import JaysonCore
 
 /// A schema kept in the sidebar library. Persisted across launches.
 struct SchemaItem: Identifiable, Codable, Hashable {
@@ -31,7 +32,12 @@ enum ViewMode: String, CaseIterable, Identifiable {
     }
 }
 
-/// Per-window state: open documents (tabs), the schema library, and chrome visibility.
+/// Which inspector is open on the right. Only one fits next to the document area.
+enum RightPanel: String, Equatable {
+    case schema, pipeline
+}
+
+/// Per-window state: open documents (tabs), the schema and pipeline libraries, and chrome visibility.
 @Observable
 @MainActor
 final class Workspace {
@@ -44,17 +50,31 @@ final class Workspace {
     var schemas: [SchemaItem] = [] {
         didSet { scheduleSessionSave() }
     }
+    /// Reusable pipelines. Persisted across launches; any document can run any of them.
+    var pipelines: [Pipeline] = [] {
+        didSet { if pipelines != oldValue { scheduleSessionSave(); rerunPipelines() } }
+    }
 
     var isSidebarVisible = true {
         didSet { scheduleSessionSave() }
     }
-    var isSchemaPanelVisible = false {
+    var rightPanel: RightPanel? {
         didSet { scheduleSessionSave() }
     }
     var viewMode: ViewMode = .split {
         didSet { scheduleSessionSave() }
     }
     var sidebarFocusSearchRequest = 0
+
+    var isSchemaPanelVisible: Bool {
+        get { rightPanel == .schema }
+        set { if newValue { rightPanel = .schema } else if rightPanel == .schema { rightPanel = nil } }
+    }
+
+    var isPipelinePanelVisible: Bool {
+        get { rightPanel == .pipeline }
+        set { if newValue { rightPanel = .pipeline } else if rightPanel == .pipeline { rightPanel = nil } }
+    }
 
     private var untitledCounter = 0
 
@@ -71,6 +91,7 @@ final class Workspace {
             restore(session)
         } else {
             schemas = SessionStore.loadLegacySchemas()
+            pipelines = SessionStore.loadLegacyPipelines()
             if SessionStore.isFirstLaunch {
                 let doc = newDocument(text: SampleData.json, select: true)
                 doc.customTitle = "Sample"
@@ -113,6 +134,8 @@ final class Workspace {
         }
         doc.onStateChanged = { [weak self] in self?.scheduleSessionSave() }
         doc.showSchemaPanel = isSchemaPanelVisible
+        doc.pipelineLibraryProvider = { [weak self] in self?.pipelines ?? [] }
+        doc.onPipelineEdited = { [weak self] pipeline in self?.update(pipeline) }
     }
 
     func select(_ doc: DocumentModel) {
@@ -216,9 +239,10 @@ final class Workspace {
 
     private func restore(_ session: SessionSnapshot) {
         schemas = session.schemas
+        pipelines = session.pipelines
         viewMode = ViewMode(rawValue: session.viewMode) ?? .split
         isSidebarVisible = session.isSidebarVisible
-        isSchemaPanelVisible = session.isSchemaPanelVisible
+        rightPanel = session.rightPanel.flatMap(RightPanel.init(rawValue:))
         for snapshot in session.documents {
             let doc = DocumentModel(id: snapshot.id, text: snapshot.sourceText)
             doc.customTitle = snapshot.customTitle
@@ -229,6 +253,11 @@ final class Workspace {
                 doc.useSchema(text: snapshot.schemaText, source: snapshot.schemaSource, itemID: nil)
             }
             attach(doc)
+            if let pipelineID = snapshot.pipelineID, let pipeline = pipelines.first(where: { $0.id == pipelineID }) {
+                doc.pipeline = pipeline
+                let stepExists = snapshot.selectedStepID.map { id in pipeline.steps.contains { $0.id == id } } ?? false
+                doc.selectedStepID = stepExists ? snapshot.selectedStepID : pipeline.steps.last?.id
+            }
             documents.append(doc)
         }
         untitledCounter = documents.count
@@ -249,14 +278,17 @@ final class Workspace {
                     sourceText: doc.sourceText,
                     schemaItemID: doc.schemaItemID,
                     schemaText: doc.schemaItemID == nil ? doc.schemaText : "",
-                    schemaSource: doc.schemaItemID == nil ? doc.schemaSourceDescription : nil
+                    schemaSource: doc.schemaItemID == nil ? doc.schemaSourceDescription : nil,
+                    pipelineID: doc.pipeline?.id,
+                    selectedStepID: doc.pipeline == nil ? nil : doc.selectedStepID
                 )
             },
             selectedDocumentID: selectedDocument?.id,
             schemas: schemas,
+            pipelines: pipelines,
             viewMode: viewMode.rawValue,
             isSidebarVisible: isSidebarVisible,
-            isSchemaPanelVisible: isSchemaPanelVisible
+            rightPanel: rightPanel?.rawValue
         )
     }
 
@@ -278,6 +310,106 @@ final class Workspace {
         SessionStore.save(snapshot)
     }
 
+    // MARK: - Pipeline library
+
+    /// Creates an empty pipeline, adds it to the library and opens it on `doc`. Steps are
+    /// added from the panel, where the block type (script, HTTP, …) is chosen.
+    @discardableResult
+    func newPipeline(for doc: DocumentModel? = nil) -> Pipeline {
+        let existing = Set(pipelines.map(\.name))
+        var name = "Pipeline"
+        var n = 2
+        while existing.contains(name) { name = "Pipeline \(n)"; n += 1 }
+        let pipeline = Pipeline(name: name, steps: [])
+        pipelines.append(pipeline)
+        if let doc = doc ?? selectedDocument { attach(pipeline, to: doc) }
+        return pipeline
+    }
+
+    func attach(_ pipeline: Pipeline, to doc: DocumentModel) {
+        doc.pipeline = pipeline
+        doc.selectedStepID = pipeline.steps.last?.id
+        showPipelinePanel()
+    }
+
+    func detachPipeline(from doc: DocumentModel) {
+        doc.pipeline = nil
+        doc.selectedStepID = nil
+    }
+
+    /// Stores an edited pipeline and pushes it to every document running it.
+    func update(_ pipeline: Pipeline) {
+        if let index = pipelines.firstIndex(where: { $0.id == pipeline.id }) {
+            if pipelines[index] != pipeline { pipelines[index] = pipeline }
+        } else {
+            pipelines.append(pipeline)
+        }
+        for doc in documents where doc.pipeline?.id == pipeline.id && doc.pipeline != pipeline {
+            doc.pipeline = pipeline
+        }
+    }
+
+    func rename(_ pipeline: Pipeline, to name: String) {
+        let trimmed = name.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty, var updated = pipelines.first(where: { $0.id == pipeline.id }) else { return }
+        updated.name = trimmed
+        update(updated)
+    }
+
+    func duplicate(_ pipeline: Pipeline) {
+        var copy = pipeline
+        copy.id = UUID()
+        copy.name = pipeline.name + " copy"
+        copy.steps = pipeline.steps.map { step in
+            var step = step
+            step.id = UUID()
+            return step
+        }
+        pipelines.append(copy)
+    }
+
+    func remove(_ pipeline: Pipeline) {
+        pipelines.removeAll { $0.id == pipeline.id }
+        for doc in documents where doc.pipeline?.id == pipeline.id {
+            detachPipeline(from: doc)
+        }
+    }
+
+    func exportPipeline(_ pipeline: Pipeline) {
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [.json]
+        panel.nameFieldStringValue = pipeline.name + "." + Pipeline.fileExtension
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        do {
+            try pipeline.exportJSON().write(to: url, options: .atomic)
+            selectedDocument?.note("Exported \(url.lastPathComponent)")
+        } catch {
+            selectedDocument?.alertMessage = error.localizedDescription
+        }
+    }
+
+    func importPipeline() {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.json]
+        panel.allowsOtherFileTypes = true
+        panel.message = "Choose an exported pipeline"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        do {
+            var pipeline = try Pipeline.importJSON(Data(contentsOf: url))
+            if pipelines.contains(where: { $0.id == pipeline.id }) { pipeline.id = UUID() }
+            pipelines.append(pipeline)
+            if let doc = selectedDocument { attach(pipeline, to: doc) }
+        } catch {
+            selectedDocument?.alertMessage = "Could not import \(url.lastPathComponent)\n\(error.localizedDescription)"
+        }
+    }
+
+    private func rerunPipelines() {
+        for doc in documents where doc.pipeline != nil {
+            doc.schedulePipelineRun(immediate: true)
+        }
+    }
+
     // MARK: - Chrome
 
     func toggleSidebar() {
@@ -287,6 +419,17 @@ final class Workspace {
     func toggleSchemaPanel() {
         withAnimation(.easeInOut(duration: 0.18)) { isSchemaPanelVisible.toggle() }
         selectedDocument?.showSchemaPanel = isSchemaPanelVisible
+    }
+
+    func togglePipelinePanel() {
+        withAnimation(.easeInOut(duration: 0.18)) { isPipelinePanelVisible.toggle() }
+        if isPipelinePanelVisible { selectedDocument?.showSchemaPanel = false }
+    }
+
+    func showPipelinePanel() {
+        guard !isPipelinePanelVisible else { return }
+        withAnimation(.easeInOut(duration: 0.18)) { rightPanel = .pipeline }
+        selectedDocument?.showSchemaPanel = false
     }
 
     func focusSidebarSearch(mode: SearchMode? = nil) {

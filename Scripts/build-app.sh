@@ -39,6 +39,12 @@ cp "$BIN" "$APP/Contents/MacOS/Jayson"
 if [[ -f Assets/AppIcon.icns ]]; then
   cp Assets/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
 fi
+# TypeScript compiler + lib declarations for pipeline script steps (see Scripts/fetch-typescript.sh).
+if [[ -f Resources/TypeScript/typescript.js ]]; then
+  ditto Resources/TypeScript "$APP/Contents/Resources/TypeScript"
+else
+  echo "warning: Resources/TypeScript is missing; TypeScript steps will be unavailable (run make typescript)" >&2
+fi
 
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>

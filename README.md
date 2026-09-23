@@ -26,11 +26,22 @@ and validate documents against them with located, human-readable errors.
 - **Validation** (drafts 4 through 2020-12): errors are listed regex101-style with their instance
   path and keyword; clicking one reveals the node. Validation runs live as you type in either
   the document or the schema.
+- **Pipelines**: chain blocks that transform the document, a small n8n for JSON. Blocks are
+  **JavaScript** or **TypeScript** scripts (`input` in, returned value out, with `$` helpers such
+  as `$.flatten`, `$.pick`, `$.groupBy`, `$.jsonPath`), **HTTP requests** (method, headers, body
+  from the step input or custom, `{{ path }}` placeholders filled from the input; responses are
+  parsed as JSON), **JSONPath** selections, **Flatten**, or another library **pipeline**.
+  TypeScript blocks are type-checked against an `Input` type derived from the loaded schema (or
+  inferred from the step's actual input) by the bundled TypeScript compiler. Pipelines run live
+  as you type (HTTP requests are only sent on Run and replayed from a cache otherwise), show
+  every step's output, and can be reused on any document, exported/imported as JSON, and
+  applied back to the document or opened as a new one.
 - Multiple documents as tabs, hidden title bar with a flat sidebar layout, full light and dark
   mode support, undo for tree edits.
-- **Session restore**: open documents, their schemas, the schema library, selection and panel
-  layout are saved to `~/Library/Application Support/Jayson/session.json` and come back on the
-  next launch. The sample document only appears on the very first launch.
+- **Session restore**: open documents, their schemas and pipelines, the schema and pipeline
+  libraries, selection and panel layout are saved to
+  `~/Library/Application Support/Jayson/session.json` and come back on the next launch. The
+  sample document only appears on the very first launch.
 
 ## Installing
 
@@ -58,6 +69,7 @@ Xcode is not required.
 make app        # release build wrapped into build/Jayson.app
 make run        # build and open the app
 make test       # run the JaysonCore checks
+make typescript # download the TypeScript compiler used by pipeline script steps (~9 MB, not committed)
 make icon       # regenerate Assets/AppIcon.icns from Assets/logo.svg
 swift run Jayson  # quick development launch as a bare executable
 ```
@@ -75,6 +87,11 @@ Open `Package.swift` in Xcode if you prefer an IDE.
 - `JAYSON_APPEARANCE=dark|light` forces an appearance at launch (handy for screenshots).
 - `JAYSON_SESSION_PATH=/path/to/session.json` uses a different session file; a path that does
   not exist yet behaves like a first launch (sample document), which is handy for screenshots.
+- Pipeline scripts run in JavaScriptCore. TypeScript support needs `Resources/TypeScript`
+  (`make typescript` fetches `typescript.js` and the ES2020 lib declarations from jsDelivr); the
+  app build copies it into the bundle, and `TypeScriptService` also looks in
+  `~/Library/Application Support/Jayson/TypeScript` and `$JAYSON_TYPESCRIPT_DIR`. Without it,
+  JavaScript steps keep working and TypeScript steps report that the compiler is missing.
 
 ## Layout
 
@@ -90,11 +107,17 @@ Sources/JaysonCore/          Pure logic, no UI dependencies
   SchemaInstance.swift       Instance generation from a schema
   SchemaLocator.swift        Finds the sub-schema for an instance path
   ArrayItemTemplate.swift    Template for "Add Item" (schema first, then inferred)
+  Pipeline.swift             Pipeline/step model and its JSON encoding
+  PipelineRunner.swift       Runs steps in sequence; JSONPath, flatten and nested pipelines
+  ScriptEngine.swift         JavaScriptCore host for script steps: `$` helpers, console, time limit
+  TypeScriptService.swift    Bundled TypeScript compiler: transpile and type-check steps
+  SchemaTypeScript.swift     JSON Schema → TypeScript declarations
 Sources/Jayson/              SwiftUI app
-  Workspace.swift            Documents (tabs), schema library, chrome state
+  Workspace.swift            Documents (tabs), schema and pipeline libraries, chrome state
   DocumentModel.swift        Per-document state: parsing, search, tree edits, validation
-  MainWindow.swift           Sidebar | tabbed document area | schema panel
-  Sidebar.swift, SchemaPanel.swift, Panes.swift, JSONTreeView.swift, Sheets.swift
+  PipelineSupport.swift      Per-document pipeline runs, step editing, previews, type checks
+  MainWindow.swift           Sidebar | tabbed document area | schema or pipeline panel
+  Sidebar.swift, SchemaPanel.swift, PipelinePanel.swift, Panes.swift, JSONTreeView.swift, Sheets.swift
   SourceEditor.swift         NSTextView wrapper with syntax colouring
   Controls.swift, Theme.swift
 Sources/JaysonCoreChecks/    Check suites for the core library
@@ -113,7 +136,8 @@ Assets/                      Logo and generated app icon
 | Next / previous match | ⌘G / ⇧⌘G |
 | Infer schema | ⇧⌘I |
 | Validate now | ⌘R |
-| Toggle sidebar / schema panel | ⌃⌘S / ⌥⌘I |
+| Toggle sidebar / schema panel / pipeline panel | ⌃⌘S / ⌥⌘I / ⌥⌘P |
+| Run pipeline / pipeline output as new document | ⌥⌘R / ⌥⇧⌘N |
 | Source / Split / Tree view | ⌘1 / ⌘2 / ⌘3 |
 | New / close document | ⌘N / ⌘W |
 | Expand / collapse all | ⌥⌘E / ⌥⇧⌘E |

@@ -25,10 +25,19 @@ struct MainWindow: View {
             .background(Chrome.contentBackground)
             .frame(minWidth: Chrome.minDocumentWidth)
             .layoutPriority(1)
-            if workspace.isSchemaPanelVisible, let doc = workspace.selectedDocument {
-                SchemaPanel(doc: doc)
-                    .id(doc.id)
-                    .transition(.move(edge: .trailing))
+            if let doc = workspace.selectedDocument {
+                switch workspace.rightPanel {
+                case .schema:
+                    SchemaPanel(doc: doc)
+                        .id(doc.id)
+                        .transition(.move(edge: .trailing))
+                case .pipeline:
+                    PipelinePanel(doc: doc)
+                        .id(doc.id)
+                        .transition(.move(edge: .trailing))
+                case nil:
+                    EmptyView()
+                }
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -53,6 +62,7 @@ struct MainWindow: View {
         Chrome.minDocumentWidth
             + (workspace.isSidebarVisible ? Chrome.sidebarWidth : 0)
             + (workspace.isSchemaPanelVisible ? Chrome.panelWidth : 0)
+            + (workspace.isPipelinePanelVisible ? Chrome.pipelinePanelWidth : 0)
     }
 
     private func propagateUndoManager() {
@@ -138,6 +148,9 @@ struct TabBar: View {
                     selection: $workspace.viewMode,
                     iconOnly: true
                 )
+                IconButton(systemImage: "arrow.triangle.branch", help: "Toggle Pipeline Panel (⌥⌘P)", isActive: workspace.isPipelinePanelVisible) {
+                    workspace.togglePipelinePanel()
+                }
                 IconButton(systemImage: "sidebar.right", help: "Toggle Schema Panel (⌥⌘I)", isActive: workspace.isSchemaPanelVisible) {
                     workspace.toggleSchemaPanel()
                 }
@@ -196,6 +209,7 @@ struct TabItem: View {
         if doc.parseError != nil { return .red }
         if doc.document == nil { return .secondary.opacity(0.4) }
         if case .invalid = doc.validationState { return .orange }
+        if let run = doc.pipelineRun, !run.isSuccess, !run.isDeferred { return .orange }
         return .green
     }
 }

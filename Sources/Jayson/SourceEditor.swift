@@ -4,12 +4,15 @@ import SwiftUI
 /// A plain-text code editor backed by NSTextView with lightweight JSON syntax colouring,
 /// undo, the system find bar, and no smart-quote/dash substitutions.
 struct SourceEditor: NSViewRepresentable {
+    enum Syntax { case json, javaScript }
+
     @Binding var text: String
     /// When `highlightTick` changes, `highlight` is selected and scrolled into view.
     var highlight: NSRange? = nil
     var highlightTick: Int = 0
     var wrapLines = false
     var isEditable = true
+    var syntax: Syntax = .json
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
 
@@ -49,10 +52,13 @@ struct SourceEditor: NSViewRepresentable {
 
     func updateNSView(_ scrollView: NSScrollView, context: Context) {
         guard let textView = scrollView.documentView as? NSTextView else { return }
+        let syntaxChanged = context.coordinator.parent.syntax != syntax
         context.coordinator.parent = self
         textView.isEditable = isEditable
         if text != context.coordinator.lastKnownText {
             context.coordinator.push(text, to: textView)
+        } else if syntaxChanged {
+            context.coordinator.highlightNow(textView)
         }
         if highlightTick != context.coordinator.lastHighlightTick {
             context.coordinator.lastHighlightTick = highlightTick
@@ -103,9 +109,16 @@ struct SourceEditor: NSViewRepresentable {
             if selection.location <= length {
                 textView.setSelectedRange(NSRange(location: selection.location, length: 0))
             }
-            JSONSyntaxHighlighter.apply(to: textView)
+            highlightNow(textView)
             if selection.location == 0 {
                 textView.scroll(.zero)
+            }
+        }
+
+        func highlightNow(_ textView: NSTextView) {
+            switch parent.syntax {
+            case .json: JSONSyntaxHighlighter.apply(to: textView)
+            case .javaScript: JavaScriptSyntaxHighlighter.apply(to: textView)
             }
         }
 
@@ -120,7 +133,7 @@ struct SourceEditor: NSViewRepresentable {
             highlightWork?.cancel()
             let work = DispatchWorkItem { [weak self] in
                 guard let self, let textView = self.textView else { return }
-                JSONSyntaxHighlighter.apply(to: textView)
+                self.highlightNow(textView)
             }
             highlightWork = work
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.12, execute: work)
@@ -161,6 +174,40 @@ enum JSONSyntaxHighlighter {
                 }
             }
             _ = string
+        }
+        storage.endEditing()
+    }
+}
+
+/// Token colouring for JavaScript/TypeScript step code: comments, strings, numbers, keywords.
+enum JavaScriptSyntaxHighlighter {
+    static let maxLength = 200_000
+
+    private static let regex: NSRegularExpression = {
+        let keywords = ["const", "let", "var", "function", "return", "if", "else", "for", "of", "in", "while", "do", "switch", "case", "break", "continue", "new", "typeof", "instanceof", "class", "extends", "this", "import", "export", "from", "async", "await", "throw", "try", "catch", "finally", "yield", "delete", "void", "as", "type", "interface", "enum", "declare", "readonly", "keyof", "satisfies", "true", "false", "null", "undefined", "NaN", "Infinity"]
+        let pattern = #"(//[^\n]*|/\*[\s\S]*?\*/)|("(?:[^"\\\n]|\\.)*"|'(?:[^'\\\n]|\\.)*'|`(?:[^`\\]|\\.)*`)|(\b\d[\d_]*(?:\.\d+)?(?:[eE][+-]?\d+)?n?\b|\b0[xX][0-9a-fA-F_]+\b)|\b("# + keywords.joined(separator: "|") + #")\b"#
+        return try! NSRegularExpression(pattern: pattern)
+    }()
+
+    @MainActor
+    static func apply(to textView: NSTextView) {
+        guard let storage = textView.textStorage else { return }
+        let full = NSRange(location: 0, length: storage.length)
+        storage.beginEditing()
+        storage.setAttributes([.font: Theme.editorFont, .foregroundColor: NSColor.labelColor], range: full)
+        if storage.length <= maxLength {
+            regex.enumerateMatches(in: storage.string, range: full) { match, _, _ in
+                guard let match else { return }
+                if match.range(at: 1).location != NSNotFound {
+                    storage.addAttribute(.foregroundColor, value: Theme.null, range: match.range(at: 1))
+                } else if match.range(at: 2).location != NSNotFound {
+                    storage.addAttribute(.foregroundColor, value: Theme.string, range: match.range(at: 2))
+                } else if match.range(at: 3).location != NSNotFound {
+                    storage.addAttribute(.foregroundColor, value: Theme.number, range: match.range(at: 3))
+                } else if match.range(at: 4).location != NSNotFound {
+                    storage.addAttribute(.foregroundColor, value: Theme.keyword, range: match.range(at: 4))
+                }
+            }
         }
         storage.endEditing()
     }
