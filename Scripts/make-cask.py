@@ -39,8 +39,8 @@ cask = f'''cask "jayson" do
   app "Jayson.app"
 {postflight}
   zap trash: [
-    "~/Library/Preferences/com.luccasoftware.Jayson.plist",
-    "~/Library/Saved Application State/com.luccasoftware.Jayson.savedState",
+    "~/Library/Preferences/fr.axel-eck.Jayson.plist",
+    "~/Library/Saved Application State/fr.axel-eck.Jayson.savedState",
   ]
 end
 '''
