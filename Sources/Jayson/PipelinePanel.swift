@@ -69,6 +69,8 @@ struct PipelinePanel: View {
                     }
                 }
                 Button("Import Pipeline…") { workspace.importPipeline() }
+                Divider()
+                Button("Variables…") { workspace.isEditingVariables = true }
                 if let pipeline = doc.pipeline {
                     Divider()
                     Button("Rename…") {
@@ -118,31 +120,8 @@ struct PipelinePanel: View {
         ScrollView {
             VStack(spacing: 0) {
                 inputRow
-                ForEach(Array(pipeline.steps.enumerated()), id: \.element.id) { index, step in
-                    connector
-                    StepRow(
-                        step: step,
-                        index: index + 1,
-                        result: doc.pipelineRun?.result(for: step.id),
-                        isSelected: doc.selectedStepID == step.id,
-                        isRunning: doc.isPipelineRunning,
-                        library: workspace.pipelines,
-                        select: { doc.selectedStepID = step.id },
-                        toggle: { doc.updateStep(step.id) { $0.isEnabled.toggle() } }
-                    )
-                    .contextMenu {
-                        Button("Rename…") { beginRenameStep(step) }
-                        Button(step.isEnabled ? "Disable" : "Enable") { doc.updateStep(step.id) { $0.isEnabled.toggle() } }
-                        Divider()
-                        Button("Move Up") { doc.moveStep(step.id, by: -1) }.disabled(index == 0)
-                        Button("Move Down") { doc.moveStep(step.id, by: 1) }.disabled(index == pipeline.steps.count - 1)
-                        Button("Duplicate") { doc.duplicateStep(step.id) }
-                        addStepMenu(title: "Insert Step After", after: step.id)
-                        Divider()
-                        Button("Delete", role: .destructive) { doc.removeStep(step.id) }
-                    }
-                }
-                connector
+                stepRows(pipeline.steps, depth: 0, parentID: nil, pipeline: pipeline)
+                connector(depth: 0)
                 addStepMenu(title: pipeline.steps.isEmpty ? "Add First Step" : "Add Step", after: nil)
                     .menuStyle(.borderlessButton)
                     .menuIndicator(.hidden)
@@ -152,8 +131,50 @@ struct PipelinePanel: View {
             .padding(.horizontal, 12)
             .padding(.top, 8)
         }
-        .frame(maxHeight: 250)
+        .frame(maxHeight: 340)
         .fixedSize(horizontal: false, vertical: true)
+    }
+
+    /// Rows for one sibling list; For Each bodies are rendered indented below their step.
+    private func stepRows(_ steps: [PipelineStep], depth: Int, parentID: UUID?, pipeline: Pipeline) -> AnyView {
+        AnyView(ForEach(Array(steps.enumerated()), id: \.element.id) { index, step in
+            connector(depth: depth)
+            StepRow(
+                step: step,
+                index: index + 1,
+                depth: depth,
+                result: doc.aggregateResult(for: step.id),
+                isSelected: doc.selectedStepID == step.id,
+                isRunning: doc.isPipelineRunning,
+                library: workspace.pipelines,
+                select: { doc.selectedStepID = step.id },
+                toggle: { doc.updateStep(step.id) { $0.isEnabled.toggle() } }
+            )
+            .contextMenu {
+                Button("Rename…") { beginRenameStep(step) }
+                Button(step.isEnabled ? "Disable" : "Enable") { doc.updateStep(step.id) { $0.isEnabled.toggle() } }
+                Divider()
+                Button("Move Up") { doc.moveStep(step.id, by: -1) }.disabled(index == 0)
+                Button("Move Down") { doc.moveStep(step.id, by: 1) }.disabled(index == steps.count - 1)
+                Button("Duplicate") { doc.duplicateStep(step.id) }
+                addStepMenu(title: "Insert Step After", after: step.id)
+                if case .forEach = step.kind {
+                    addStepMenu(title: "Add Step Inside", after: nil, inside: step.id)
+                }
+                Divider()
+                Button("Delete", role: .destructive) { doc.removeStep(step.id) }
+            }
+            if case .forEach(let loop) = step.kind {
+                stepRows(loop.steps, depth: depth + 1, parentID: step.id, pipeline: pipeline)
+                connector(depth: depth + 1)
+                addStepMenu(title: loop.steps.isEmpty ? "Add Step to Loop" : "Add Step", after: nil, inside: step.id, compact: true)
+                    .menuStyle(.borderlessButton)
+                    .menuIndicator(.hidden)
+                    .fixedSize()
+                    .padding(.leading, CGFloat(depth + 1) * StepRow.indent)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+        })
     }
 
     private var inputRow: some View {
@@ -183,35 +204,39 @@ struct PipelinePanel: View {
         .buttonStyle(.plain)
     }
 
-    private var connector: some View {
-        Rectangle().fill(Chrome.hairline).frame(width: 1, height: 10).padding(.leading, 19).frame(maxWidth: .infinity, alignment: .leading)
+    private func connector(depth: Int) -> some View {
+        Rectangle().fill(Chrome.hairline).frame(width: 1, height: 10)
+            .padding(.leading, 19 + CGFloat(depth) * StepRow.indent)
+            .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    private func addStepMenu(title: String, after id: UUID?) -> some View {
+    private func addStepMenu(title: String, after id: UUID?, inside parentID: UUID? = nil, compact: Bool = false) -> some View {
         Menu {
-            Button("JavaScript") { doc.addStep(.script(language: .javascript, code: Pipeline.starterCode(for: .javascript)), after: id) }
-            Button("TypeScript") { doc.addStep(.script(language: .typescript, code: Pipeline.starterCode(for: .typescript)), after: id) }
+            Button("JavaScript") { doc.addStep(.script(language: .javascript, code: Pipeline.starterCode(for: .javascript)), after: id, inside: parentID) }
+            Button("TypeScript") { doc.addStep(.script(language: .typescript, code: Pipeline.starterCode(for: .typescript)), after: id, inside: parentID) }
             Divider()
-            Button("HTTP Request") { doc.addStep(.httpRequest(HTTPRequestStep()), after: id) }
+            Button("HTTP Request") { doc.addStep(.httpRequest(HTTPRequestStep()), after: id, inside: parentID) }
+            Button("For Each") { doc.addStep(.forEach(ForEachStep()), after: id, inside: parentID) }
+            Button("Set Variable") { doc.addStep(.setVariable(SetVariableStep()), after: id, inside: parentID) }
             Divider()
-            Button("JSONPath") { doc.addStep(.jsonPath(expression: "$..*", firstMatchOnly: false), after: id) }
-            Button("Flatten") { doc.addStep(.flatten(depth: nil), after: id) }
+            Button("JSONPath") { doc.addStep(.jsonPath(expression: "$..*", firstMatchOnly: false), after: id, inside: parentID) }
+            Button("Flatten") { doc.addStep(.flatten(depth: nil), after: id, inside: parentID) }
             let others = workspace.pipelines.filter { $0.id != doc.pipeline?.id }
             if !others.isEmpty {
                 Menu("Run Pipeline") {
                     ForEach(others) { other in
-                        Button(other.name) { doc.addStep(.pipeline(id: other.id), after: id) }
+                        Button(other.name) { doc.addStep(.pipeline(id: other.id), after: id, inside: parentID) }
                     }
                 }
             }
         } label: {
             HStack(spacing: 5) {
-                Image(systemName: "plus").font(.system(size: 11, weight: .semibold))
-                Text(title).font(.system(size: 12, weight: .medium))
+                Image(systemName: "plus").font(.system(size: compact ? 10 : 11, weight: .semibold))
+                Text(title).font(.system(size: compact ? 11 : 12, weight: .medium))
             }
             .foregroundStyle(.secondary)
-            .padding(.horizontal, 9)
-            .frame(height: 26)
+            .padding(.horizontal, compact ? 7 : 9)
+            .frame(height: compact ? 22 : 26)
             .background(RoundedRectangle(cornerRadius: 6, style: .continuous).fill(Chrome.fill))
             .contentShape(Rectangle())
         }
@@ -239,11 +264,18 @@ struct PipelinePanel: View {
                         doc.runPipelineNow()
                     }
                     .id(step.id)
+                case .forEach(let loop):
+                    forEachEditor(step: step, loop: loop)
+                case .setVariable(let variable):
+                    SetVariableEditor(variable: variable, existingNames: workspace.variables.map(\.name)) { updated in
+                        doc.updateStep(step.id) { $0.kind = .setVariable(updated) }
+                    }
+                    .id(step.id)
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         } else if pipeline.steps.isEmpty {
-            EmptyState(systemImage: "plus.square.dashed", title: "Add the first step", message: "Pick a block: a JavaScript or TypeScript script, an HTTP request, a JSONPath selection, Flatten, or another pipeline. The document is the input of the first step.") {
+            EmptyState(systemImage: "plus.square.dashed", title: "Add the first step", message: "Pick a block: a JavaScript or TypeScript script, an HTTP request, a For Each loop, a JSONPath selection, Flatten, or another pipeline. The document is the input of the first step.") {
                 addStepMenu(title: "Add Step", after: nil)
                     .menuStyle(.borderlessButton)
                     .menuIndicator(.hidden)
@@ -429,6 +461,73 @@ struct PipelinePanel: View {
         .padding(14)
     }
 
+    private func forEachEditor(step: PipelineStep, loop: ForEachStep) -> some View {
+        func update(_ body: (inout ForEachStep) -> Void) {
+            var copy = loop
+            body(&copy)
+            doc.updateStep(step.id) { $0.kind = .forEach(copy) }
+        }
+        return ScrollView {
+            VStack(alignment: .leading, spacing: 14) {
+                HStack(spacing: 10) {
+                    Image(systemName: "repeat").font(.system(size: 13, weight: .medium)).foregroundStyle(.secondary)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(loop.steps.isEmpty ? "The body is empty: each item passes through unchanged." : "\(loop.steps.count) step\(loop.steps.count == 1 ? "" : "s") run once per item, with the item as input.")
+                            .font(.system(size: 12.5))
+                        if let count = doc.selectedStepResult?.input?.arrayValue?.count {
+                            Text("Last input: \(count) item\(count == 1 ? "" : "s")").font(Chrome.captionFont).foregroundStyle(.secondary)
+                        }
+                    }
+                    Spacer()
+                    addStepMenu(title: "Add Step", after: nil, inside: step.id)
+                        .menuStyle(.borderlessButton)
+                        .menuIndicator(.hidden)
+                        .fixedSize()
+                }
+
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Output").font(Chrome.sectionFont).foregroundStyle(.secondary)
+                    Picker("", selection: Binding(get: { loop.outputMode }, set: { value in update { $0.outputMode = value } })) {
+                        Text("Results").tag(ForEachStep.OutputMode.results)
+                        Text("Items merged with their result").tag(ForEachStep.OutputMode.merged)
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                    Text(loop.outputMode == .results
+                         ? "An array with the body's output for every item, in order."
+                         : "Each item with the keys of its result added (`{ ...item, ...result }`); a non-object result goes under `result`.")
+                        .font(Chrome.captionFont).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                }
+
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("When an item fails").font(Chrome.sectionFont).foregroundStyle(.secondary)
+                    Picker("", selection: Binding(get: { loop.errorPolicy }, set: { value in update { $0.errorPolicy = value } })) {
+                        Text("Stop the pipeline").tag(ForEachStep.ErrorPolicy.fail)
+                        Text("Leave it out").tag(ForEachStep.ErrorPolicy.skip)
+                        Text("Keep null in its place").tag(ForEachStep.ErrorPolicy.null)
+                    }
+                    .pickerStyle(.radioGroup)
+                    .font(.system(size: 12.5))
+                }
+
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack {
+                        Text("Concurrency").font(Chrome.sectionFont).foregroundStyle(.secondary)
+                        Spacer()
+                        Text(loop.concurrency == 1 ? "one item at a time" : "up to \(loop.concurrency) items at a time").font(Chrome.captionFont).foregroundStyle(.secondary)
+                    }
+                    Slider(value: Binding(get: { Double(loop.concurrency) }, set: { value in update { $0.concurrency = Int(value.rounded()) } }), in: 1...Double(ForEachStep.maxConcurrency), step: 1)
+                }
+
+                Text("Inside the loop, `input` is the current item. `{{ loop.index }}`, `{{ loop.item.id }}` and `$.loop` give the position and the original item; `{{ vars.token }}` works as everywhere. Select a body step and use the item picker above its output to inspect one iteration.")
+                    .font(Chrome.captionFont)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .padding(14)
+        }
+    }
+
     // MARK: Output
 
     private var outputPane: some View {
@@ -442,6 +541,9 @@ struct PipelinePanel: View {
                     Text(shape).font(Chrome.captionFont).foregroundStyle(.secondary)
                 }
                 Spacer()
+                if let loop = doc.selectedLoopResult, !loop.iterations.isEmpty {
+                    iterationPicker(count: loop.iterations.count)
+                }
                 IconButton(systemImage: "doc.on.doc", help: "Copy this output", size: 24) { doc.copySelectedStepOutput() }
                     .disabled(doc.selectedStepValue == nil)
                 IconButton(systemImage: "plus.rectangle.on.rectangle", help: "Open final output as a new document", size: 24) { openOutputAsDocument() }
@@ -458,8 +560,25 @@ struct PipelinePanel: View {
     }
 
     private var outputTitle: String {
-        guard let step = doc.selectedStep, let pipeline = doc.pipeline, let index = pipeline.index(of: step.id) else { return "Input" }
-        return "Output of step \(index + 1)"
+        guard let step = doc.selectedStep, let pipeline = doc.pipeline, let entry = pipeline.entry(for: step.id) else { return "Input" }
+        if entry.depth > 0 { return "Output of \(step.displayName)" }
+        return "Output of step \(entry.position)"
+    }
+
+    private func iterationPicker(count: Int) -> some View {
+        let current = min(doc.selectedIteration, count - 1)
+        return HStack(spacing: 2) {
+            IconButton(systemImage: "chevron.left", help: "Previous item", size: 20) { doc.selectedIteration = max(0, current - 1) }
+                .disabled(current == 0)
+            Text("Item \(current + 1) of \(count)")
+                .font(Chrome.captionFont.monospacedDigit())
+                .foregroundStyle(.secondary)
+                .frame(minWidth: 84)
+            IconButton(systemImage: "chevron.right", help: "Next item", size: 20) { doc.selectedIteration = min(count - 1, current + 1) }
+                .disabled(current >= count - 1)
+        }
+        .padding(.horizontal, 4)
+        .background(Capsule().fill(Chrome.fill))
     }
 
     @ViewBuilder
@@ -580,8 +699,8 @@ struct PipelinePanel: View {
         if doc.isPipelineRunning { return "Running…" }
         guard let run = doc.pipelineRun else { return doc.document == nil ? "Waiting for valid JSON" : "Not run yet" }
         if let failure = run.failure, let pipeline = doc.pipeline {
-            let index = pipeline.index(of: failure.id).map { $0 + 1 } ?? 0
-            if failure.wasDeferred { return "Step \(index) is an HTTP request · press Run to send it" }
+            let index = pipeline.entry(for: failure.id)?.position ?? 0
+            if failure.wasDeferred { return "Step \(index) is waiting on an HTTP request · press Run to send it" }
             return "Failed at step \(index) · \(failure.error ?? "")"
         }
         let ran = run.steps.filter { !$0.wasSkipped }.count
@@ -591,7 +710,7 @@ struct PipelinePanel: View {
     // MARK: Empty state
 
     private var emptyState: some View {
-        EmptyState(systemImage: "arrow.triangle.branch", title: "No pipeline on this document", message: "A pipeline is a chain of steps that transforms the JSON: scripts in JavaScript or TypeScript, JSONPath selections, flattening, or other pipelines. Pipelines are saved in the sidebar and can be reused on any document.") {
+        EmptyState(systemImage: "arrow.triangle.branch", title: "No pipeline on this document", message: "A pipeline is a chain of steps that transforms the JSON: scripts in JavaScript or TypeScript, HTTP requests, For Each loops, JSONPath selections, flattening, or other pipelines. Pipelines are saved in the sidebar and can be reused on any document.") {
             ChromeButton(title: "New Pipeline", systemImage: "plus") { workspace.newPipeline(for: doc) }
             if !workspace.pipelines.isEmpty {
                 Menu {
@@ -664,8 +783,11 @@ struct PipelinePanel: View {
 // MARK: - Step row
 
 private struct StepRow: View {
+    static let indent: CGFloat = 18
+
     let step: PipelineStep
     let index: Int
+    var depth = 0
     let result: PipelineStepResult?
     let isSelected: Bool
     let isRunning: Bool
@@ -718,6 +840,7 @@ private struct StepRow: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .padding(.leading, CGFloat(depth) * Self.indent)
         .onHover { hovering = $0 }
         .opacity(step.isEnabled ? 1 : 0.75)
     }
@@ -845,12 +968,98 @@ private struct HTTPRequestEditor: View {
                         .font(.system(size: 12.5))
                 }
 
-                Text("Placeholders like `{{ user.id }}` in the URL, header values and custom body are filled from the step input. Requests are only sent when you press Run or Send; live edits reuse the last response.")
+                Text("Placeholders in the URL, header values and custom body: `{{ user.id }}` reads the step input, `{{ vars.token }}` a variable (Variables… in the panel menu), `{{ steps.Login.token }}` an earlier step, `{{ loop.index }}` the For Each position. Requests are only sent when you press Run or Send; live edits reuse the last response.")
                     .font(Chrome.captionFont)
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
             .padding(14)
         }
+    }
+}
+
+
+// MARK: - Set Variable editor
+
+private struct SetVariableEditor: View {
+    let variable: SetVariableStep
+    let existingNames: [String]
+    let update: (SetVariableStep) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Variable name").font(Chrome.sectionFont).foregroundStyle(.secondary)
+                HStack(spacing: 8) {
+                    TextField("token", text: Binding(get: { variable.name }, set: { value in
+                        var copy = variable
+                        copy.name = value
+                        update(copy)
+                    }))
+                    .textFieldStyle(.roundedBorder)
+                    .font(.system(size: 12.5, design: .monospaced))
+                    if !existingNames.isEmpty {
+                        Menu {
+                            ForEach(existingNames.filter { !$0.isEmpty }, id: \.self) { name in
+                                Button(name) {
+                                    var copy = variable
+                                    copy.name = name
+                                    update(copy)
+                                }
+                            }
+                        } label: {
+                            Image(systemName: "chevron.down").font(.system(size: 10, weight: .semibold)).foregroundStyle(.secondary)
+                                .frame(width: 22, height: 22)
+                                .background(RoundedRectangle(cornerRadius: 5).fill(Chrome.fill))
+                        }
+                        .menuStyle(.borderlessButton)
+                        .menuIndicator(.hidden)
+                        .fixedSize()
+                        .help("Pick an existing variable")
+                    }
+                }
+                if !variable.name.isEmpty, !SetVariableStep.isValidName(variable.name) {
+                    Text("Use letters, digits and underscores, starting with a letter.").font(Chrome.captionFont).foregroundStyle(.red)
+                }
+            }
+
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Value").font(Chrome.sectionFont).foregroundStyle(.secondary)
+                Picker("", selection: Binding(get: { variable.source.isTemplate }, set: { isTemplate in
+                    var copy = variable
+                    copy.source = isTemplate ? .template(variable.source.text) : .path(variable.source.text)
+                    update(copy)
+                })) {
+                    Text("Path into the input").tag(false)
+                    Text("Text with placeholders").tag(true)
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                TextField(variable.source.isTemplate ? "Bearer {{ input.access_token }}" : "access_token", text: Binding(get: { variable.source.text }, set: { value in
+                    var copy = variable
+                    copy.source = variable.source.isTemplate ? .template(value) : .path(value)
+                    update(copy)
+                }))
+                .textFieldStyle(.roundedBorder)
+                .font(.system(size: 12.5, design: .monospaced))
+                Text(variable.source.isTemplate
+                     ? "The text is stored as a string after `{{ … }}` placeholders are filled (input paths, `vars.…`, `steps.…`, `loop.…`)."
+                     : "The JSON value at this path in the step input is stored as is. Leave empty for the whole input; `steps.Login.token` or `document.id` read elsewhere.")
+                    .font(Chrome.captionFont).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            }
+
+            Toggle("Save to the variable library", isOn: Binding(get: { variable.saveToLibrary }, set: { value in
+                var copy = variable
+                copy.saveToLibrary = value
+                update(copy)
+            }))
+            .font(.system(size: 12.5))
+            Text(variable.saveToLibrary
+                 ? "The value is written to Variables after each run, so later runs and other pipelines can use `{{ vars.\(variable.name.isEmpty ? "name" : variable.name) }}` without repeating this step. The pipeline itself never contains the value."
+                 : "The variable is available to the following steps of this run as `{{ vars.\(variable.name.isEmpty ? "name" : variable.name) }}` and `$.vars.\(variable.name.isEmpty ? "name" : variable.name)`. The step passes its input through unchanged.")
+                .font(Chrome.captionFont).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+            Spacer()
+        }
+        .padding(14)
     }
 }

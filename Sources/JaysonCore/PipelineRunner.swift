@@ -16,6 +16,8 @@ public struct PipelineStepResult: Identifiable, Hashable, Sendable {
     public var wasSkipped = false
     /// True when an HTTP step was not sent because the run only allowed cached responses.
     public var wasDeferred = false
+    /// For a For Each step: one run of the body per input item, in input order.
+    public var iterations: [PipelineRunResult] = []
 
     public var isFailure: Bool { error != nil }
 }
@@ -28,11 +30,41 @@ public struct PipelineRunResult: Hashable, Sendable {
     public var output: JSONValue?
     public var failedStepID: UUID?
     public var duration: TimeInterval
+    /// Variables at the end of the run (library values plus everything set during it).
+    public var variables: [String: JSONValue] = [:]
+    /// Variables that Set Variable steps asked to save to the library.
+    public var savedVariables: [String: JSONValue] = [:]
 
     public var isSuccess: Bool { failedStepID == nil }
 
+    /// The result of a step at this level, or, for a step inside a For Each, its result in
+    /// the first iteration that ran it.
     public func result(for stepID: UUID) -> PipelineStepResult? {
-        steps.first { $0.id == stepID }
+        if let direct = steps.first(where: { $0.id == stepID }) { return direct }
+        for step in steps where !step.iterations.isEmpty {
+            for iteration in step.iterations {
+                if let nested = iteration.result(for: stepID) { return nested }
+            }
+        }
+        return nil
+    }
+
+    /// The result of a step inside a For Each for one particular item.
+    public func result(for stepID: UUID, iteration index: Int) -> PipelineStepResult? {
+        guard let loop = loopResult(containing: stepID) else { return result(for: stepID) }
+        guard loop.iterations.indices.contains(index) else { return nil }
+        return loop.iterations[index].result(for: stepID, iteration: index)
+    }
+
+    /// The For Each result (at any depth) whose iterations ran `stepID`.
+    public func loopResult(containing stepID: UUID) -> PipelineStepResult? {
+        for step in steps where !step.iterations.isEmpty {
+            for iteration in step.iterations {
+                if iteration.steps.contains(where: { $0.id == stepID }) { return step }
+                if let deeper = iteration.loopResult(containing: stepID) { return deeper }
+            }
+        }
+        return nil
     }
 
     public var failure: PipelineStepResult? {
@@ -92,19 +124,33 @@ public struct PipelineRunner: Sendable {
         self.resolvePipeline = resolvePipeline
     }
 
-    public func run(_ pipeline: Pipeline, input: JSONValue, schema: JSONValue? = nil) async -> PipelineRunResult {
-        await run(pipeline, input: input, schema: schema, visited: [])
+    /// What every step of one pipeline run shares.
+    private struct Scope: Sendable {
+        var document: JSONValue
+        var schema: JSONValue?
+        var variables: [String: JSONValue]
+        var savedVariables: [String: JSONValue] = [:]
+        var loop: TemplateContext.LoopInfo?
+        var visited: Set<UUID>
     }
 
-    private func run(_ pipeline: Pipeline, input: JSONValue, schema: JSONValue?, visited: Set<UUID>) async -> PipelineRunResult {
+    /// Runs `pipeline` on `input`. `variables` seeds `{{ vars.… }}` / `$.vars` (normally the
+    /// variable library).
+    public func run(_ pipeline: Pipeline, input: JSONValue, schema: JSONValue? = nil, variables: [String: JSONValue] = [:]) async -> PipelineRunResult {
+        var scope = Scope(document: input, schema: schema, variables: variables, visited: [])
+        return await run(pipeline.steps, pipelineID: pipeline.id, input: input, scope: &scope)
+    }
+
+    private func run(_ steps: [PipelineStep], pipelineID: UUID, input: JSONValue, scope: inout Scope) async -> PipelineRunResult {
         let start = Date()
         var results: [PipelineStepResult] = []
         var current: JSONValue? = input
         var failedStepID: UUID?
         var previousOutputs: [JSONValue?] = []
         var previousNames: [String] = []
+        var stepsByName: [String: JSONValue] = [:]
 
-        for step in pipeline.steps {
+        for step in steps {
             guard let stepInput = current, failedStepID == nil else {
                 results.append(PipelineStepResult(id: step.id, wasSkipped: true))
                 continue
@@ -113,12 +159,23 @@ public struct PipelineRunner: Sendable {
                 results.append(PipelineStepResult(id: step.id, input: stepInput, output: stepInput, wasSkipped: true))
                 previousOutputs.append(stepInput)
                 previousNames.append(step.displayName)
+                stepsByName[step.displayName] = stepInput
+                stepsByName[String(previousOutputs.count)] = stepInput
                 continue
             }
-            var context = ScriptContext(input: stepInput, document: input, schema: stepInput == input ? schema : nil)
+            if Task.isCancelled {
+                results.append(PipelineStepResult(id: step.id, input: stepInput, error: "The run was cancelled."))
+                failedStepID = step.id
+                current = nil
+                continue
+            }
+            var context = ScriptContext(input: stepInput, document: scope.document, schema: stepInput == scope.document && scope.loop == nil ? scope.schema : nil)
             context.previousOutputs = previousOutputs
             context.previousNames = previousNames
-            var result = await execute(step, context: context, visited: visited.union([pipeline.id]))
+            context.variables = scope.variables
+            context.loop = scope.loop
+            let template = TemplateContext(input: stepInput, variables: scope.variables, document: scope.document, steps: stepsByName, loop: scope.loop)
+            var result = await execute(step, context: context, template: template, pipelineID: pipelineID, scope: &scope)
             result.id = step.id
             result.input = stepInput
             if let output = result.output, result.error == nil {
@@ -130,19 +187,25 @@ public struct PipelineRunner: Sendable {
             results.append(result)
             previousOutputs.append(result.output)
             previousNames.append(step.displayName)
+            if let output = result.output {
+                stepsByName[step.displayName] = output
+                stepsByName[String(previousOutputs.count)] = output
+            }
         }
 
         return PipelineRunResult(
-            pipelineID: pipeline.id,
+            pipelineID: pipelineID,
             input: input,
             steps: results,
             output: failedStepID == nil ? current : nil,
             failedStepID: failedStepID,
-            duration: Date().timeIntervalSince(start)
+            duration: Date().timeIntervalSince(start),
+            variables: scope.variables,
+            savedVariables: scope.savedVariables
         )
     }
 
-    private func execute(_ step: PipelineStep, context: ScriptContext, visited: Set<UUID>) async -> PipelineStepResult {
+    private func execute(_ step: PipelineStep, context: ScriptContext, template: TemplateContext, pipelineID: UUID, scope: inout Scope) async -> PipelineStepResult {
         let start = Date()
         var result = PipelineStepResult(id: step.id)
         switch step.kind {
@@ -171,6 +234,9 @@ public struct PipelineRunner: Sendable {
             result.error = outcome.error?.message
             result.errorLine = outcome.error?.line
             result.logs = outcome.logs
+            if outcome.error == nil {
+                for (name, value) in outcome.variableUpdates { scope.variables[name] = value }
+            }
 
         case .jsonPath(let expression, let firstMatchOnly):
             do {
@@ -198,11 +264,16 @@ public struct PipelineRunner: Sendable {
                 result.error = "The referenced pipeline no longer exists in the library."
                 break
             }
-            guard !visited.contains(id) else {
+            guard !scope.visited.contains(id), id != pipelineID else {
                 result.error = "“\(nested.name)” would run itself recursively."
                 break
             }
-            let inner = await run(nested, input: context.input, schema: nil, visited: visited)
+            var innerScope = scope
+            innerScope.schema = nil
+            innerScope.visited.insert(pipelineID)
+            let inner = await run(nested.steps, pipelineID: nested.id, input: context.input, scope: &innerScope)
+            scope.variables = innerScope.variables
+            scope.savedVariables.merge(innerScope.savedVariables) { _, new in new }
             if let failure = inner.failure {
                 let failedName = nested.step(withID: failure.id)?.displayName ?? "a step"
                 result.error = "“\(nested.name)” failed at \(failedName): \(failure.error ?? "unknown error")"
@@ -213,7 +284,7 @@ public struct PipelineRunner: Sendable {
             result.logs = inner.steps.flatMap(\.logs)
 
         case .httpRequest(let request):
-            let key = request.cacheKey(input: context.input)
+            let key = request.cacheKey(context: template)
             if let cached = httpCache?.value(for: key) {
                 result.output = cached
                 result.logs = ["Reused the response from the last run (press Run to send again)."]
@@ -225,13 +296,118 @@ public struct PipelineRunner: Sendable {
                 break
             }
             do {
-                let (value, log) = try await send(request, input: context.input)
+                let (value, log) = try await send(request, context: template)
                 result.output = value
                 result.logs = [log]
                 httpCache?.store(value, for: key)
             } catch {
                 result.error = error.localizedDescription
             }
+
+        case .forEach(let loop):
+            result = await runLoop(loop, step: step, input: context.input, pipelineID: pipelineID, scope: &scope)
+
+        case .setVariable(let assignment):
+            let name = assignment.name.trimmingCharacters(in: .whitespaces)
+            guard !name.isEmpty else {
+                result.error = "Give the variable a name."
+                break
+            }
+            guard SetVariableStep.isValidName(name) else {
+                result.error = "“\(name)” is not a valid variable name. Use letters, digits and underscores, starting with a letter."
+                break
+            }
+            let value = assignment.resolve(in: template)
+            scope.variables[name] = value
+            if assignment.saveToLibrary { scope.savedVariables[name] = value }
+            result.output = context.input
+            result.logs = ["\(name) = \(JSONFormatter.preview(value, maxLength: 120))\(assignment.saveToLibrary ? " · saved to the library" : "")"]
+        }
+        result.duration = Date().timeIntervalSince(start)
+        return result
+    }
+
+    // MARK: For Each
+
+    private func runLoop(_ loop: ForEachStep, step: PipelineStep, input: JSONValue, pipelineID: UUID, scope: inout Scope) async -> PipelineStepResult {
+        let start = Date()
+        var result = PipelineStepResult(id: step.id)
+        guard let items = input.arrayValue else {
+            result.error = "For Each expects an array, but the input is \(article(input.typeName)). Select the array first (for example with JSONPath or `Object.values(input)`)."
+            result.duration = Date().timeIntervalSince(start)
+            return result
+        }
+        let concurrency = max(1, min(loop.concurrency, ForEachStep.maxConcurrency))
+        let count = items.count
+        let baseScope = scope
+        let runner = self
+
+        // Each iteration works on a copy of the variables; the body cannot leak assignments
+        // into the outer run (iterations may run concurrently), but library saves are kept.
+        var iterations = [PipelineRunResult?](repeating: nil, count: count)
+        await withTaskGroup(of: (Int, PipelineRunResult).self) { group in
+            var next = 0
+            func enqueue() {
+                guard next < count else { return }
+                let index = next
+                let item = items[index]
+                next += 1
+                group.addTask {
+                    var iterationScope = baseScope
+                    iterationScope.schema = nil
+                    iterationScope.loop = TemplateContext.LoopInfo(index: index, count: count, item: item)
+                    let run = await runner.run(loop.steps, pipelineID: pipelineID, input: item, scope: &iterationScope)
+                    return (index, run)
+                }
+            }
+            // On the first failure (with the `fail` policy) or a cancelled run, no further
+            // items start; the ones in flight finish so the lowest failing item is reported.
+            var stopped = false
+            for _ in 0..<min(concurrency, count) { enqueue() }
+            while let (index, run) = await group.next() {
+                iterations[index] = run
+                if (loop.errorPolicy == .fail && !run.isSuccess) || Task.isCancelled { stopped = true }
+                if !stopped { enqueue() }
+            }
+        }
+
+        var outputs: [JSONValue] = []
+        var failures: [(index: Int, run: PipelineRunResult)] = []
+        var deferred = false
+        for (index, item) in items.enumerated() {
+            guard let run = iterations[index] else { continue }
+            if let failure = run.failure {
+                failures.append((index, run))
+                if failure.wasDeferred { deferred = true }
+                if loop.errorPolicy == .null { outputs.append(.null) }
+                continue
+            }
+            for (name, value) in run.savedVariables { scope.savedVariables[name] = value }
+            let output = run.output ?? .null
+            outputs.append(loop.outputMode == .merged ? ForEachStep.merge(item: item, result: output) : output)
+        }
+        result.iterations = iterations.enumerated().map { index, run in
+            run ?? PipelineRunResult(pipelineID: pipelineID, input: items[index], steps: loop.steps.map { PipelineStepResult(id: $0.id, wasSkipped: true) }, output: nil, failedStepID: nil, duration: 0)
+        }
+        result.wasDeferred = deferred
+
+        if loop.errorPolicy == .fail, let first = failures.min(by: { $0.index < $1.index }), let failure = first.run.failure {
+            let name = loop.steps.first { $0.id == failure.id }?.displayName ?? "a step"
+            if failure.wasDeferred {
+                result.error = "Item \(first.index + 1) of \(count): \(failure.error ?? "the request was not sent")"
+            } else {
+                result.error = "Item \(first.index + 1) of \(count) failed at \(name): \(failure.error ?? "unknown error")"
+            }
+        } else if Task.isCancelled, iterations.contains(where: { $0 == nil }) {
+            result.error = "The run was cancelled."
+        } else {
+            result.output = .array(outputs)
+            var summary = "Ran \(count) item\(count == 1 ? "" : "s")"
+            if !failures.isEmpty {
+                summary += " · \(failures.count) failed and \(loop.errorPolicy == .skip ? "were left out" : "became null")"
+            }
+            if concurrency > 1, count > 1 { summary += " · up to \(concurrency) at a time" }
+            result.logs = [summary] + failures.prefix(10).map { "Item \($0.index + 1): \($0.run.failure?.error ?? "failed")" }
         }
         result.duration = Date().timeIntervalSince(start)
         return result
@@ -254,8 +430,8 @@ public struct PipelineRunner: Sendable {
         var errorDescription: String? { message }
     }
 
-    private func send(_ step: HTTPRequestStep, input: JSONValue) async throws -> (JSONValue, String) {
-        let urlText = HTTPRequestStep.expand(step.url, input: input).trimmingCharacters(in: .whitespacesAndNewlines)
+    private func send(_ step: HTTPRequestStep, context: TemplateContext) async throws -> (JSONValue, String) {
+        let urlText = context.expand(step.url).trimmingCharacters(in: .whitespacesAndNewlines)
         guard !urlText.isEmpty else { throw HTTPStepError(message: "Enter a URL for the request.") }
         guard let url = URL(string: urlText), url.scheme != nil else { throw HTTPStepError(message: "“\(urlText)” is not a valid URL.") }
 
@@ -264,17 +440,17 @@ public struct PipelineRunner: Sendable {
         request.setValue("application/json, */*;q=0.8", forHTTPHeaderField: "Accept")
         var hasContentType = false
         for header in step.headers where !header.name.trimmingCharacters(in: .whitespaces).isEmpty {
-            request.setValue(HTTPRequestStep.expand(header.value, input: input), forHTTPHeaderField: header.name)
+            request.setValue(context.expand(header.value), forHTTPHeaderField: header.name)
             if header.name.lowercased() == "content-type" { hasContentType = true }
         }
         if step.method.allowsBody {
             switch step.bodyMode {
             case .none: break
             case .input:
-                request.httpBody = Data(JSONFormatter.minify(input).utf8)
+                request.httpBody = Data(JSONFormatter.minify(context.input).utf8)
                 if !hasContentType { request.setValue("application/json", forHTTPHeaderField: "Content-Type") }
             case .custom:
-                let body = HTTPRequestStep.expand(step.customBody, input: input)
+                let body = context.expand(step.customBody)
                 request.httpBody = Data(body.utf8)
                 if !hasContentType { request.setValue("application/json", forHTTPHeaderField: "Content-Type") }
             }
@@ -365,6 +541,14 @@ extension PipelineRunner {
 
     type KeyOrFn<T> = keyof T | string | ((item: T) => unknown);
 
+    interface JaysonLoop {
+      /** 0-based position of the current item. */
+      readonly index: number;
+      readonly count: number;
+      /** The item this iteration started with. */
+      readonly item: unknown;
+    }
+
     interface JaysonHelpers {
       /** The pipeline's original input (the whole document). */
       readonly document: unknown;
@@ -374,6 +558,12 @@ extension PipelineRunner {
       readonly steps: unknown[];
       /** Output of a previous step by name or index (negative counts from the end). */
       step(nameOrIndex: string | number): unknown;
+      /** Variables: the library values plus everything set earlier in this run. */
+      readonly vars: Record<string, unknown>;
+      /** Sets a variable for the rest of the run (`{{ vars.name }}` in later steps). */
+      setVar(name: string, value: unknown): void;
+      /** The current For Each iteration, or null outside a loop. */
+      readonly loop: JaysonLoop | null;
       /** Reads a dotted path such as "store.book[0].title". */
       get(value: unknown, path: string | (string | number)[], fallback?: unknown): unknown;
       flatten<T>(array: T[], depth?: number): unknown[];

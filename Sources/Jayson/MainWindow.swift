@@ -44,6 +44,8 @@ struct MainWindow: View {
         .background(Chrome.contentBackground)
         .environment(workspace)
         .focusedSceneValue(\.workspace, workspace)
+        .sheet(isPresented: $workspace.isEditingVariables) { VariablesSheet().environment(workspace) }
+        .sheet(item: $workspace.documentToRename) { doc in RenameDocumentSheet(doc: doc).environment(workspace) }
         .onDrop(of: [.fileURL], isTargeted: nil) { providers in
             handleDrop(providers)
         }
@@ -197,9 +199,12 @@ struct TabItem: View {
                 .fill(isSelected ? Chrome.selection : (hovering ? Chrome.hover : .clear))
         )
         .contentShape(Rectangle())
+        .onTapGesture(count: 2) { workspace.documentToRename = doc }
         .onTapGesture { workspace.select(doc) }
         .onHover { hovering = $0 }
         .contextMenu {
+            Button("Rename…") { workspace.documentToRename = doc }
+            Divider()
             Button("Close") { workspace.close(doc) }
             Button("Close Others") { for other in workspace.documents where other.id != doc.id { workspace.close(other) } }
         }

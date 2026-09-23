@@ -149,6 +149,7 @@ struct Sidebar: View {
                     }
                 }
                 .contextMenu {
+                    Button("Rename…") { workspace.documentToRename = doc }
                     Button("Close") { workspace.close(doc) }
                     Button("Duplicate") {
                         let copy = workspace.newDocument(text: doc.sourceText, select: true)

@@ -85,6 +85,11 @@ struct AppCommands: Commands {
             }
             .keyboardShortcut("w", modifiers: .command)
             Divider()
+            Button("Rename Document…") {
+                guard let workspace, let document else { return }
+                workspace.documentToRename = document
+            }
+            .disabled(document == nil)
             Button("Save As…") { document?.saveAs() }
                 .keyboardShortcut("s", modifiers: [.command, .shift])
         }
@@ -145,6 +150,7 @@ struct AppCommands: Commands {
         CommandMenu("Pipeline") {
             Button("New Pipeline") { workspace?.newPipeline() }
             Button("Import Pipeline…") { workspace?.importPipeline() }
+            Button("Variables…") { workspace?.isEditingVariables = true }
             Divider()
             Button("Run Pipeline") { document?.runPipelineNow() }
                 .keyboardShortcut("r", modifiers: [.command, .option])

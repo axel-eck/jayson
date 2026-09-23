@@ -130,3 +130,150 @@ struct URLPromptSheet: View {
         dismiss()
     }
 }
+
+
+// MARK: - Variables
+
+/// Edits the pipeline variable library (`{{ vars.name }}`). Values are stored in
+/// `variables.json` (owner-only) in Application Support, never in pipelines.
+struct VariablesSheet: View {
+    @Environment(Workspace.self) private var workspace
+    @Environment(\.dismiss) private var dismiss
+    @State private var revealed: Set<UUID> = []
+    @FocusState private var focusedName: UUID?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack(alignment: .firstTextBaseline) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Variables").font(.headline)
+                    Text("Available to every pipeline as `{{ vars.name }}` in HTTP requests and `$.vars.name` in scripts.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+                Spacer()
+                Button {
+                    let variable = workspace.addVariable()
+                    focusedName = variable.id
+                } label: {
+                    Label("Add", systemImage: "plus")
+                }
+            }
+
+            if workspace.variables.isEmpty {
+                EmptyState(systemImage: "tag", title: "No variables yet", message: "Add a token or base URL here once and reuse it in every request. A Set Variable step with “Save to the variable library” can also fill this list from a response.")
+                    .frame(height: 160)
+            } else {
+                HStack(spacing: 8) {
+                    Text("Name").frame(width: 150, alignment: .leading)
+                    Text("Value").frame(maxWidth: .infinity, alignment: .leading)
+                    Text("Secret").frame(width: 50)
+                    Spacer().frame(width: 20)
+                }
+                .font(Chrome.sectionFont).foregroundStyle(.secondary)
+                ScrollView {
+                    VStack(spacing: 6) {
+                        ForEach(workspace.variables) { variable in
+                            row(variable)
+                        }
+                    }
+                }
+                .frame(maxHeight: 320)
+            }
+
+            Text("Stored in \(VariableStore.fileURL.path) with owner-only permissions. Secret values are masked here and never included in exported pipelines or the session file.")
+                .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+
+            HStack {
+                Spacer()
+                Button("Done") { dismiss() }.keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(20)
+        .frame(width: 560)
+    }
+
+    private func row(_ variable: PipelineVariable) -> some View {
+        let isRevealed = revealed.contains(variable.id) || !variable.isSecret
+        let nameBinding = Binding(get: { variable.name }, set: { value in workspace.updateVariable(variable.id) { $0.name = value } })
+        let valueBinding = Binding(get: { variable.value }, set: { value in workspace.updateVariable(variable.id) { $0.value = value } })
+        return HStack(spacing: 8) {
+            TextField("name", text: nameBinding)
+                .focused($focusedName, equals: variable.id)
+                .frame(width: 150)
+            Group {
+                if isRevealed {
+                    TextField("value", text: valueBinding)
+                } else {
+                    SecureField("value", text: valueBinding)
+                }
+            }
+            .frame(maxWidth: .infinity)
+            .overlay(alignment: .trailing) {
+                if variable.isSecret {
+                    Button {
+                        if revealed.contains(variable.id) { revealed.remove(variable.id) } else { revealed.insert(variable.id) }
+                    } label: {
+                        Image(systemName: revealed.contains(variable.id) ? "eye.slash" : "eye").font(.system(size: 11)).foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                    .padding(.trailing, 6)
+                    .help(revealed.contains(variable.id) ? "Hide value" : "Show value")
+                }
+            }
+            Toggle("", isOn: Binding(get: { variable.isSecret }, set: { value in workspace.updateVariable(variable.id) { $0.isSecret = value } }))
+                .toggleStyle(.switch)
+                .controlSize(.mini)
+                .labelsHidden()
+                .frame(width: 50)
+            Button {
+                workspace.removeVariable(variable.id)
+            } label: {
+                Image(systemName: "xmark.circle.fill").foregroundStyle(.tertiary)
+            }
+            .buttonStyle(.plain)
+            .frame(width: 20)
+            .help("Remove variable")
+        }
+        .textFieldStyle(.roundedBorder)
+        .font(.system(size: 12, design: .monospaced))
+        .overlay(alignment: .bottomLeading) {
+            if !variable.name.isEmpty, !SetVariableStep.isValidName(variable.name) {
+                Text("Names use letters, digits and underscores, starting with a letter.")
+                    .font(.caption2).foregroundStyle(.red).offset(y: 14)
+            }
+        }
+    }
+}
+
+// MARK: - Rename document
+
+struct RenameDocumentSheet: View {
+    let doc: DocumentModel
+    @Environment(Workspace.self) private var workspace
+    @Environment(\.dismiss) private var dismiss
+    @State private var name = ""
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text("Rename Document").font(.headline)
+            TextField(doc.sourceURL == nil ? "Untitled" : doc.title, text: $name)
+                .textFieldStyle(.roundedBorder)
+                .onSubmit(commit)
+            Text(doc.sourceURL == nil ? "The name is shown on the tab and in the sidebar." : "Leave empty to show the file name again. The file itself is not renamed.")
+                .font(.caption).foregroundStyle(.secondary)
+            HStack {
+                Spacer()
+                Button("Cancel", role: .cancel) { dismiss() }.keyboardShortcut(.cancelAction)
+                Button("Rename", action: commit).keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(20)
+        .frame(width: 380)
+        .onAppear { name = doc.customTitle ?? "" }
+    }
+
+    private func commit() {
+        workspace.rename(doc, to: name)
+        dismiss()
+    }
+}

@@ -28,6 +28,7 @@ extension DocumentModel {
         }
         let schema = schemaDocument
         let library = pipelineLibraryProvider?() ?? []
+        let variables = variablesProvider?() ?? [:]
         let cache = httpCache
         isPipelineRunning = true
         pipelineTask = Task { [weak self] in
@@ -36,12 +37,13 @@ extension DocumentModel {
             var runner = PipelineRunner(resolvePipeline: { id in library.first { $0.id == id } })
             runner.httpCache = cache
             runner.networkPolicy = allowNetwork ? .allow : .cachedOnly
-            let result = await Task.detached(priority: .userInitiated) { await runner.run(pipeline, input: document, schema: schema) }.value
+            let result = await Task.detached(priority: .userInitiated) { await runner.run(pipeline, input: document, schema: schema, variables: variables) }.value
             guard !Task.isCancelled, let self else { return }
             self.pipelineRun = result
             self.isPipelineRunning = false
             self.refreshStepPreview()
             self.scheduleTypeCheck()
+            if !result.savedVariables.isEmpty { self.onVariablesSaved?(result.savedVariables) }
         }
     }
 
@@ -51,10 +53,17 @@ extension DocumentModel {
         schedulePipelineRun(immediate: true, allowNetwork: true)
     }
 
-    /// Result of the selected step (nil for the input row or before the first run).
+    /// Result of the selected step (nil for the input row or before the first run). For a
+    /// step inside a For Each this is its result for the selected item.
     var selectedStepResult: PipelineStepResult? {
         guard let selectedStepID, let pipelineRun else { return nil }
-        return pipelineRun.result(for: selectedStepID)
+        return pipelineRun.result(for: selectedStepID, iteration: selectedIteration)
+    }
+
+    /// The For Each result whose iterations ran the selected step, if it is inside a loop.
+    var selectedLoopResult: PipelineStepResult? {
+        guard let selectedStepID, let pipelineRun else { return nil }
+        return pipelineRun.loopResult(containing: selectedStepID)
     }
 
     var selectedStep: PipelineStep? {
@@ -81,48 +90,42 @@ extension DocumentModel {
 
     func updateStep(_ id: UUID, _ body: (inout PipelineStep) -> Void) {
         updatePipeline { pipeline in
-            guard let index = pipeline.index(of: id) else { return }
-            body(&pipeline.steps[index])
+            pipeline.updateStep(id, body)
         }
     }
 
+    /// Adds a step after `after`, or inside the For Each `inside`, or at the end.
     @discardableResult
-    func addStep(_ kind: PipelineStepKind, after id: UUID? = nil) -> PipelineStep {
+    func addStep(_ kind: PipelineStepKind, after id: UUID? = nil, inside parentID: UUID? = nil) -> PipelineStep {
         let step = PipelineStep(kind: kind)
         updatePipeline { pipeline in
-            if let id, let index = pipeline.index(of: id) {
-                pipeline.steps.insert(step, at: index + 1)
-            } else {
-                pipeline.steps.append(step)
-            }
+            pipeline.insert(step, after: id, inside: parentID)
         }
         selectedStepID = step.id
         return step
     }
 
     func removeStep(_ id: UUID) {
-        guard let pipeline, let index = pipeline.index(of: id) else { return }
-        updatePipeline { $0.steps.remove(at: index) }
-        if selectedStepID == id {
-            let remaining = self.pipeline?.steps ?? []
-            selectedStepID = remaining.indices.contains(index) ? remaining[index].id : remaining.last?.id
+        guard let pipeline, pipeline.step(withID: id) != nil else { return }
+        let parentID = pipeline.entry(for: id)?.parentID
+        let wasSelectedInside = selectedStepID.map { selected in
+            selected == id || pipeline.allSteps.contains { $0.step.id == selected && $0.parentID == id }
+        } ?? false
+        var replacement: PipelineStep?
+        updatePipeline { replacement = $0.remove(id) }
+        if wasSelectedInside {
+            selectedStepID = replacement?.id ?? parentID
         }
     }
 
     func moveStep(_ id: UUID, by offset: Int) {
-        updatePipeline { pipeline in
-            guard let index = pipeline.index(of: id) else { return }
-            let target = index + offset
-            guard pipeline.steps.indices.contains(target) else { return }
-            pipeline.steps.swapAt(index, target)
-        }
+        updatePipeline { $0.move(id, by: offset) }
     }
 
     func duplicateStep(_ id: UUID) {
-        guard let pipeline, let index = pipeline.index(of: id) else { return }
-        var copy = pipeline.steps[index]
-        copy.id = UUID()
-        updatePipeline { $0.steps.insert(copy, at: index + 1) }
+        guard let pipeline, let original = pipeline.step(withID: id) else { return }
+        let copy = original.withFreshIDs()
+        updatePipeline { $0.insert(copy, after: id) }
         selectedStepID = copy.id
     }
 
@@ -202,8 +205,9 @@ extension DocumentModel {
     /// Input type for a step: the loaded schema while the step still reads the document,
     /// otherwise a type inferred from the step's actual input after the last run.
     func typeDeclarations(for stepID: UUID) -> String {
-        let input = pipelineRun?.result(for: stepID)?.input ?? (pipeline?.steps.first?.id == stepID ? document : nil)
-        let usesSchema = input != nil && input == document && schemaDocument != nil
+        let input = pipelineRun?.result(for: stepID, iteration: selectedIteration)?.input ?? (pipeline?.steps.first?.id == stepID ? document : nil)
+        let insideLoop = pipeline?.entry(for: stepID)?.parentID != nil
+        let usesSchema = input != nil && input == document && schemaDocument != nil && !insideLoop
         return PipelineRunner.declarations(input: input, schema: usesSchema ? schemaDocument : nil)
     }
 
@@ -259,6 +263,8 @@ extension PipelineStepKind {
         case .flatten: return "arrow.down.right.and.arrow.up.left"
         case .pipeline: return "arrow.triangle.branch"
         case .httpRequest: return "globe"
+        case .forEach: return "repeat"
+        case .setVariable: return "tag"
         }
     }
 
@@ -276,6 +282,15 @@ extension PipelineStepKind {
             return library.first { $0.id == id }?.name ?? "Missing pipeline"
         case .httpRequest(let request):
             return request.url.isEmpty ? "\(request.method.rawValue) · no URL yet" : "\(request.method.rawValue) \(request.url)"
+        case .forEach(let loop):
+            let count = loop.steps.count
+            var text = count == 0 ? "Empty body" : "\(count) step\(count == 1 ? "" : "s") per item"
+            if loop.outputMode == .merged { text += " · merged" }
+            return text
+        case .setVariable(let variable):
+            let name = variable.name.isEmpty ? "?" : variable.name
+            let source = variable.source.text.isEmpty ? (variable.source.isTemplate ? "\"\"" : "input") : variable.source.text
+            return "\(name) = \(source)\(variable.saveToLibrary ? " · saved" : "")"
         }
     }
 }
@@ -296,5 +311,21 @@ extension TimeInterval {
         if self < 0.001 { return "<1 ms" }
         if self < 1 { return "\(Int((self * 1000).rounded())) ms" }
         return String(format: "%.2f s", self)
+    }
+}
+
+extension DocumentModel {
+    /// The result shown on a step row. For a step inside a For Each, the first iteration
+    /// that failed at it wins over the first iteration, so the row's dot reflects any failure.
+    func aggregateResult(for stepID: UUID) -> PipelineStepResult? {
+        guard let pipelineRun else { return nil }
+        guard let loop = pipelineRun.loopResult(containing: stepID) else { return pipelineRun.result(for: stepID) }
+        var first: PipelineStepResult?
+        for iteration in loop.iterations {
+            guard let result = iteration.result(for: stepID) else { continue }
+            if result.error != nil { return result }
+            if first == nil { first = result }
+        }
+        return first
     }
 }

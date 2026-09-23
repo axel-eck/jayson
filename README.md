@@ -55,8 +55,20 @@ A pipeline chains blocks that transform the document, a bit like a small n8n for
 - TypeScript blocks are type-checked by the bundled TypeScript compiler against an `Input` type
   derived from the loaded schema, or inferred from the step's actual input when there is none.
 - HTTP blocks send a request with a chosen method, headers and body. The body can be the step
-  input or custom text, `{{ path }}` placeholders are filled from the input, and the response is
-  parsed as JSON.
+  input or custom text, `{{ path }}` placeholders are filled from the input, a variable
+  (`{{ vars.token }}`), an earlier step (`{{ steps.Login.access_token }}`) or the document
+  (`{{ document.id }}`), and the response is parsed as JSON.
+- For Each blocks run a body of steps once per item of an array. You choose how many items run
+  at a time, what happens when an item fails (stop, drop it, or keep `null`), and whether the
+  output lists the results or merges each result back into its item. Inside the body,
+  `{{ loop.index }}`, `{{ loop.item }}` and `$.loop` refer to the current iteration, and the
+  output pane lets you inspect the run for any single item.
+- Variables are a library of named values such as tokens and base URLs, shared by every
+  pipeline as `{{ vars.name }}` in requests and `$.vars.name` in scripts. A Set Variable block
+  (or `$.setVar` in a script) captures a value during a run, for example the token in a login
+  response, and can save it to the library so later runs and other pipelines reuse it. Variables
+  are kept in `~/Library/Application Support/Jayson/variables.json`, readable only by you,
+  masked in the interface when marked secret, and never included in an exported pipeline.
 - JSONPath and Flatten blocks select or reshape the data, and a block can run another pipeline
   from the library.
 - Pipelines run live as you type and show every step's output. HTTP requests are only sent when
@@ -168,7 +180,7 @@ Sources/JaysonCore/          Pure logic, no UI dependencies
   SchemaLocator.swift        Finds the sub-schema for an instance path
   ArrayItemTemplate.swift    Template for "Add Item" (schema first, then inferred)
   Pipeline.swift             Pipeline/step model and its JSON encoding
-  PipelineRunner.swift       Runs steps in sequence; JSONPath, flatten and nested pipelines
+  PipelineRunner.swift       Runs steps in sequence; For Each, variables, HTTP, JSONPath, flatten, nested pipelines
   ScriptEngine.swift         JavaScriptCore host for script steps: `$` helpers, console, time limit
   TypeScriptService.swift    Bundled TypeScript compiler: transpile and type-check steps
   SchemaTypeScript.swift     JSON Schema to TypeScript declarations
