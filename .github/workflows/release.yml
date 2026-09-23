@@ -5,6 +5,7 @@ name: Release
 on:
   push:
     tags: ["v*"]
+  workflow_dispatch:
 
 permissions:
   contents: write
@@ -15,6 +16,11 @@ env:
 jobs:
   release:
     runs-on: macos-15
+    # The secrets context cannot be used in step conditions, so expose presence via env.
+    env:
+      HAS_SIGNING: ${{ secrets.DEVELOPER_ID_P12 != '' }}
+      HAS_NOTARY: ${{ secrets.NOTARY_APPLE_ID != '' }}
+      HAS_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN != '' }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -43,7 +49,7 @@ jobs:
           fi
 
       - name: Import signing certificate
-        if: ${{ steps.existing.outputs.skip != 'true' && secrets.DEVELOPER_ID_P12 != '' }}
+        if: ${{ steps.existing.outputs.skip != 'true' && env.HAS_SIGNING == 'true' }}
         env:
           P12_BASE64: ${{ secrets.DEVELOPER_ID_P12 }}
           P12_PASSWORD: ${{ secrets.DEVELOPER_ID_P12_PASSWORD }}
@@ -57,7 +63,7 @@ jobs:
           echo "CODESIGN_IDENTITY=$(security find-identity -v -p codesigning build.keychain | grep 'Developer ID Application' | head -1 | sed -E 's/.*"(.*)"/\1/')" >> "$GITHUB_ENV"
 
       - name: Store notarization credentials
-        if: ${{ steps.existing.outputs.skip != 'true' && secrets.NOTARY_APPLE_ID != '' }}
+        if: ${{ steps.existing.outputs.skip != 'true' && env.HAS_NOTARY == 'true' }}
         run: |
           xcrun notarytool store-credentials ci-notary \
             --apple-id "${{ secrets.NOTARY_APPLE_ID }}" \
@@ -81,7 +87,7 @@ jobs:
             --title "Jayson $VERSION" --generate-notes
 
       - name: Update Homebrew tap
-        if: ${{ steps.existing.outputs.skip != 'true' && secrets.HOMEBREW_TAP_TOKEN != '' }}
+        if: ${{ steps.existing.outputs.skip != 'true' && env.HAS_TAP_TOKEN == 'true' }}
         env:
           GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
         run: |
