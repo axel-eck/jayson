@@ -38,6 +38,10 @@ and validate documents against them with located, human-readable errors.
   applied back to the document or opened as a new one.
 - Multiple documents as tabs, hidden title bar with a flat sidebar layout, full light and dark
   mode support, undo for tree edits.
+- **Session restore**: open documents, their schemas and pipelines, the schema and pipeline
+  libraries, selection and panel layout are saved to
+  `~/Library/Application Support/Jayson/session.json` and come back on the next launch. The
+  sample document only appears on the very first launch.
 
 ## Installing
 
@@ -81,6 +85,8 @@ Open `Package.swift` in Xcode if you prefer an IDE.
   plain executable target, `JaysonCoreChecks`, with a tiny assertion harness. Run it with
   `make test` or `swift run JaysonCoreChecks`.
 - `JAYSON_APPEARANCE=dark|light` forces an appearance at launch (handy for screenshots).
+- `JAYSON_SESSION_PATH=/path/to/session.json` uses a different session file; a path that does
+  not exist yet behaves like a first launch (sample document), which is handy for screenshots.
 - Pipeline scripts run in JavaScriptCore. TypeScript support needs `Resources/TypeScript`
   (`make typescript` fetches `typescript.js` and the ES2020 lib declarations from jsDelivr); the
   app build copies it into the bundle, and `TypeScriptService` also looks in
