@@ -8,18 +8,16 @@ parser.add_argument("--version", required=True)
 parser.add_argument("--sha256", required=True)
 parser.add_argument("--repo", required=True, help="owner/repo on GitHub")
 parser.add_argument("--output", required=True)
-parser.add_argument("--notarized", action="store_true", help="omit the quarantine caveat")
+parser.add_argument("--notarized", action="store_true", help="omit the quarantine-stripping postflight step")
 args = parser.parse_args()
 
-caveat = "" if args.notarized else '''
-  caveats <<~EOS
-    Jayson is not notarized with an Apple Developer ID yet, so Gatekeeper will
-    refuse to open it the first time. Either remove the quarantine flag:
-
-      xattr -dr com.apple.quarantine "#{appdir}/Jayson.app"
-
-    or right-click Jayson.app in #{appdir} and choose Open once.
-  EOS
+# Not notarized builds: strip the quarantine flag after install so the app opens
+# without a right-click > Open (pattern borrowed from briangtn/ScreenAlerts' cask).
+postflight = "" if args.notarized else '''
+  # Not notarized: drop the quarantine flag so the app opens without a right-click > Open.
+  postflight_steps do
+    run "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "{{appdir}}/Jayson.app"]
+  end
 '''
 
 cask = f'''cask "jayson" do
@@ -39,12 +37,12 @@ cask = f'''cask "jayson" do
   depends_on macos: :sonoma
 
   app "Jayson.app"
-
+{postflight}
   zap trash: [
     "~/Library/Preferences/com.luccasoftware.Jayson.plist",
     "~/Library/Saved Application State/com.luccasoftware.Jayson.savedState",
   ]
-{caveat}end
+end
 '''
 pathlib.Path(args.output).write_text(cask)
 print(f"wrote {args.output}")
