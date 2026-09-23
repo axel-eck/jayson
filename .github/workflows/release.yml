@@ -28,8 +28,22 @@ jobs:
             echo "Tag v$TAG does not match VERSION ($FILE)"; exit 1
           fi
 
+      # A release published by hand (e.g. from `make release`) wins; rebuilding would change
+      # the archive's checksum and break the cask that already references it.
+      - name: Check for an existing release
+        id: existing
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "Release $GITHUB_REF_NAME already exists; nothing to do."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Import signing certificate
-        if: ${{ secrets.DEVELOPER_ID_P12 != '' }}
+        if: ${{ steps.existing.outputs.skip != 'true' && secrets.DEVELOPER_ID_P12 != '' }}
         env:
           P12_BASE64: ${{ secrets.DEVELOPER_ID_P12 }}
           P12_PASSWORD: ${{ secrets.DEVELOPER_ID_P12_PASSWORD }}
@@ -43,7 +57,7 @@ jobs:
           echo "CODESIGN_IDENTITY=$(security find-identity -v -p codesigning build.keychain | grep 'Developer ID Application' | head -1 | sed -E 's/.*"(.*)"/\1/')" >> "$GITHUB_ENV"
 
       - name: Store notarization credentials
-        if: ${{ secrets.NOTARY_APPLE_ID != '' }}
+        if: ${{ steps.existing.outputs.skip != 'true' && secrets.NOTARY_APPLE_ID != '' }}
         run: |
           xcrun notarytool store-credentials ci-notary \
             --apple-id "${{ secrets.NOTARY_APPLE_ID }}" \
@@ -52,11 +66,13 @@ jobs:
           echo "NOTARY_PROFILE=ci-notary" >> "$GITHUB_ENV"
 
       - name: Build release
+        if: ${{ steps.existing.outputs.skip != 'true' }}
         env:
           GITHUB_REPO: ${{ github.repository }}
         run: Scripts/release.sh
 
       - name: Create GitHub Release
+        if: ${{ steps.existing.outputs.skip != 'true' }}
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -65,7 +81,7 @@ jobs:
             --title "Jayson $VERSION" --generate-notes
 
       - name: Update Homebrew tap
-        if: ${{ secrets.HOMEBREW_TAP_TOKEN != '' }}
+        if: ${{ steps.existing.outputs.skip != 'true' && secrets.HOMEBREW_TAP_TOKEN != '' }}
         env:
           GH_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
         run: |
